@@ -173,7 +173,7 @@ num = 20
 batch_num = 30
 train_num = 1
 SNR1 = [1,2,3,4,5,6]
-SNR2 = [6] * 6
+SNR2 = [1] * 6
 H_BCH = torch.from_numpy(np.loadtxt('BCH(63,45).txt')).float().t()
 #H_LDPC = torch.Tensor([[1,1,1,0,0,0,1,0,0,0,0],
 #                       [0,0,0,1,1,1,0,1,0,0,0],
@@ -184,14 +184,14 @@ H_LDPC = torch.Tensor([[0,1,0,1,1,0,0,1],
                        [1,1,1,0,0,1,0,0],
                        [0,0,1,0,0,1,1,1],
                        [1,0,0,1,1,0,1,0]]).t()
-#H = H_BCH
-H = H_LDPC
+H = H_BCH
+#H = H_LDPC
 data1 = Gen_Data(SNR1, num, batch_num)
 data2 = Gen_Data(SNR2, num, batch_num)
-#x = torch.zeros((1, 63))
+x = torch.zeors((1, 63))
 #x = torch.zeros((1, 8))
 #x = torch.zeros((1, 11))
-x = torch.Tensor([[1,0,0,1,0,1,0,1]])
+#x = torch.Tensor([[1,0,0,1,0,1,0,1]])
 y1, post1 = data1.AWGN(x)
 y2, post2 = data2.AWGN(x)
 train_dataset = CustomDataset(H, post1, x, H.size(1))
@@ -360,5 +360,3 @@ if __name__ == '__main__':
 #        f.write(' %.30f ' % (loss))
 #        
 #        f.close()
-
-        
