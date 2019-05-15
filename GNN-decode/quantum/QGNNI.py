@@ -150,13 +150,13 @@ class CustomDataset(InMemoryDataset):
 torch.autograd.set_detect_anomaly(True)
 L = 4
 P1 = [0.01, 0.02, 0.03, 0.04, 0.05, 0.06]
-P2 = [0.01]
+P2 = [0.07]
 H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).float().t() #64, 30
 h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep()).float()
 BATCH_SIZE = 512
 lr = 3e-4
-lambda_a = 0.8
+lambda_a = 0
 Nc = 25
 run1 = 15360
 run2 = 2048
@@ -246,6 +246,7 @@ class GNNI(torch.nn.Module):
         res = self.mlp(tmp)
 #        res.register_hook(a_p)
         res = torch.sigmoid(-1 * res)
+        res = torch.clamp(res, 1e-7, 1-1e-7)
         
         return res
 
@@ -258,23 +259,28 @@ class LossFunc(torch.nn.Module):
 #        self.H_prep = Variable(H_prep).cuda()
         self.H_prep = H_prep.cuda()
         
-    def forward(self, pred, y):
+    def forward(self, pred, y, train):
         tmp = y[0 : self.a].clone()
         res = pred[0 : self.a].clone()
         
         for i in range(self.a, len(y), self.a):
             tmp = torch.cat([tmp, y[i : i+self.a].clone()], dim=1)
             res = torch.cat([res, pred[i : i+self.a].clone()], dim=1)
-            
-#        res.register_hook(a_p)
+
+#        deg = ((torch.where(res>0.5, torch.ones(res.size()).cuda(), torch.zeros(res.size()).cuda()) + tmp) % 2)
+#        deg = torch.where(deg==0, deg, torch.ones(deg.size()).cuda()).sum() / torch.numel(deg)
+#        print(deg.item())
         
         loss_a = torch.matmul(self.H_prep, res + tmp)
-        
         loss_b = (1 - tmp).mul(torch.log(1 - res)) + tmp.mul(torch.log(res))
-        
-        loss = (1 - lambda_a) * abs(torch.sin(loss_a * math.pi / 2)).sum() + lambda_a * torch.sum(loss_b) / (-1 * torch.numel(loss_b))
-        
-#        print(res / (BATCH_SIZE * (2 * L ** 2 - 2)))
+        if train == 1:
+            loss = ((1 - lambda_a) * abs(torch.sin(loss_a * math.pi / 2)).sum() - \
+                    lambda_a * loss_b.sum()) / (BATCH_SIZE * (2 * L ** 2 - 2))
+#            loss_p =  (torch.matmul(self.H_prep, tmp + tmp) % 2).sum()
+#            print(loss_p.item())
+        else:
+            loss = abs(torch.sin(loss_a * math.pi / 2)).sum() / (BATCH_SIZE * (2 * L ** 2 - 2))
+#            loss = loss_b.sum() / (-1 * BATCH_SIZE * (2 * L ** 2 - 2))
         
         return loss
     
@@ -292,7 +298,7 @@ def train(epoch):
     for datas in train_loader:
         datas = datas.to(device)
         optimizer.zero_grad()
-        loss = criterion(decoder(datas), datas.y)
+        loss = criterion(decoder(datas), datas.y, train=1)
         loss.backward()
         
 #        for p in decoder.parameters():
@@ -301,12 +307,12 @@ def train(epoch):
         optimizer.step()
         
     if epoch % 6 == 0:
-        f.write(' %.15f ' % (loss.item() / (run2 * (2 * L ** 2 - 2))))
+        f.write(' %.15f ' % (loss.item()))
         torch.save(decoder.state_dict(), './model/decoder_parameters_epoch%d.pkl' % (epoch))
         
     f.close()
     
-    return
+    return loss
 
 
 def test(decoder_a):
@@ -315,9 +321,9 @@ def test(decoder_a):
     for datas in test_loader:
         datas = datas.to(device)
         pred = decoder_a(datas)
-        loss += criterion(pred, datas.y).item()
+        loss += criterion(pred, datas.y, train=0).item()
         
-    return loss / (run2 * (2 * L ** 2 - 2))
+    return loss / (run2 / BATCH_SIZE)
 
 
 if __name__ == '__main__':
@@ -326,7 +332,7 @@ if __name__ == '__main__':
     if training:
         for epoch in range(1, 211):
             train(epoch)
-            test_acc = test()
+            test_acc = test(decoder)
             print('Epoch: {:03d}, Test Acc: {:.10f}'.format(epoch, test_acc))
     
 #    if load:
@@ -343,10 +349,11 @@ if __name__ == '__main__':
     if load:
         f = open('./test_loss_for_trained_model.txt','a')
         decoder_b = GNNI(Nc).to(device)
-        decoder_b.load_state_dict(torch.load('./model/decoder_parameters_epoch210.pkl'))
+        decoder_b.load_state_dict(torch.load('./model/decoder_parameters_epoch24.pkl'))
+        
         loss = test(decoder_b)
         print(loss)
         f.write(' %.15f ' % (loss))
         
         f.close()
-    
+#    

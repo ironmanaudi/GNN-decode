@@ -170,7 +170,7 @@ class CustomDataset(InMemoryDataset):
 
 
 num = 20
-batch_num = 30
+batch_num = 100
 train_num = 1
 SNR1 = [1,2,3,4,5,6]
 SNR2 = [1] * 6
@@ -188,7 +188,7 @@ H = H_BCH
 #H = H_LDPC
 data1 = Gen_Data(SNR1, num, batch_num)
 data2 = Gen_Data(SNR2, num, batch_num)
-x = torch.zeors((1, 63))
+x = torch.zeros((1, 63))
 #x = torch.zeros((1, 8))
 #x = torch.zeros((1, 11))
 #x = torch.Tensor([[1,0,0,1,0,1,0,1]])
@@ -198,7 +198,8 @@ train_dataset = CustomDataset(H, post1, x, H.size(1))
 test_dataset = CustomDataset(H, post2, x, H.size(1))
 BATCH_SIZE = 120
 lr = 3e-4
-Nc = 5
+Nc = 25
+lambda_a = 0.8
 rows, cols = H.size(0), H.size(1)
 train_loader = DataLoader(train_dataset, batch_size = BATCH_SIZE, shuffle=False)
 test_loader = DataLoader(test_dataset, batch_size = BATCH_SIZE, shuffle=False)
@@ -222,7 +223,7 @@ class GatedGraphConv(MessagePassing):
             x = x if x.dim() == 2 else x.unsqueeze(-1)
             
         mes = self.propagate(edge_index=edge_index, size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE), x=m, post=x)
-        m = self.rnn(m, mes)
+        m = self.rnn(m, mes) + m
         
         return m
     
@@ -267,7 +268,7 @@ class GNNI(torch.nn.Module):
         
         res = self.mlp(tmp)
         res = torch.sigmoid(-1 * res)
-        res = torch.clamp(res, 1e-7, 1-1e-7)
+        res = torch.clamp(res, 1e-8, 1-1e-8)
         
         return res
 
@@ -275,14 +276,20 @@ class GNNI(torch.nn.Module):
 class LossFunc(torch.nn.Module):
     def __init__(self, H):
         super(LossFunc, self).__init__()
-        
+        self.H = H.t().cuda()
 #        self.a, self.b = max(H.size()), min(H.size())
 
     def forward(self, pred, y):
-        loss_b = torch.log(pred)
-        loss_a = torch.log(1 - pred)
-        loss = (1 - y).mul(loss_a) + y.mul(loss_b)
-        loss = torch.sum(loss) / (-1 * torch.numel(loss))
+        res = pred[0 : rows].clone()
+        
+        for i in range(rows, len(pred), rows):
+            res = torch.cat([res, pred[i : i+rows].clone()], dim=1)
+        
+        loss_a = (1 - y).mul(torch.log(1 - pred)) + y.mul(torch.log(pred))
+        loss_b = torch.matmul(self.H, res)
+        loss_c = torch.where(1-loss_b > 0, 1-loss_b, torch.zeros(loss_b.size()).cuda())
+        loss = torch.sum(lambda_a * loss_a) / (-1 * torch.numel(loss_a)) + torch.sum((1 - lambda_a) * loss_c) / torch.numel(loss_c)
+        
 #        print(loss)
         
         return loss
@@ -331,8 +338,8 @@ def test(decoder):
 
 
 if __name__ == '__main__':
-    training = 0
-    load = 1
+    training = 1
+    load = 0
     if training:
         for epoch in range(1, 301):
             train(epoch)
