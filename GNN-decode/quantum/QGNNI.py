@@ -148,9 +148,9 @@ class CustomDataset(InMemoryDataset):
 
 
 torch.autograd.set_detect_anomaly(True)
-L = 4
+L = 6
 P1 = [0.01, 0.02, 0.03, 0.04, 0.05, 0.06]
-P2 = [0.07]
+P2 = [0.04]
 H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).float().t() #64, 30
 h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep()).float()
@@ -174,7 +174,7 @@ def a_p(grad):
 #    print(a.sum().item() / grad.numel())
     print(abs(grad).min().item(), abs(grad).max().item())
 #    f = open('./grad.txt','w')
-#    for i in grad:
+#    for i in grad
 #        f.write('%f, '%i.item())
 #    f.close()
     
@@ -275,11 +275,11 @@ class LossFunc(torch.nn.Module):
         loss_b = (1 - tmp).mul(torch.log(1 - res)) + tmp.mul(torch.log(res))
         if train == 1:
             loss = ((1 - lambda_a) * abs(torch.sin(loss_a * math.pi / 2)).sum() - \
-                    lambda_a * loss_b.sum()) / (BATCH_SIZE * (2 * L ** 2 - 2))
+                    lambda_a * loss_b.sum()) / (BATCH_SIZE * (2 * L ** 2))
 #            loss_p =  (torch.matmul(self.H_prep, tmp + tmp) % 2).sum()
 #            print(loss_p.item())
         else:
-            loss = abs(torch.sin(loss_a * math.pi / 2)).sum() / (BATCH_SIZE * (2 * L ** 2 - 2))
+            loss = abs(torch.sin(loss_a * math.pi / 2)).sum() / (BATCH_SIZE * (2 * L ** 2 ))
 #            loss = loss_b.sum() / (-1 * BATCH_SIZE * (2 * L ** 2 - 2))
         
         return loss
