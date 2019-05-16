@@ -148,15 +148,14 @@ class CustomDataset(InMemoryDataset):
 
 
 torch.autograd.set_detect_anomaly(True)
-L = 6
+L = 4
 P1 = [0.01, 0.02, 0.03, 0.04, 0.05, 0.06]
-P2 = [0.04]
+P2 = [0.01]
 H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).float().t() #64, 30
 h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep()).float()
 BATCH_SIZE = 512
 lr = 3e-4
-lambda_a = 0
 Nc = 25
 run1 = 15360
 run2 = 2048
@@ -259,7 +258,7 @@ class LossFunc(torch.nn.Module):
 #        self.H_prep = Variable(H_prep).cuda()
         self.H_prep = H_prep.cuda()
         
-    def forward(self, pred, y, train):
+    def forward(self, pred, y):
         tmp = y[0 : self.a].clone()
         res = pred[0 : self.a].clone()
         
@@ -272,16 +271,8 @@ class LossFunc(torch.nn.Module):
 #        print(deg.item())
         
         loss_a = torch.matmul(self.H_prep, res + tmp)
-        loss_b = (1 - tmp).mul(torch.log(1 - res)) + tmp.mul(torch.log(res))
-        if train == 1:
-            loss = ((1 - lambda_a) * abs(torch.sin(loss_a * math.pi / 2)).sum() - \
-                    lambda_a * loss_b.sum()) / (BATCH_SIZE * (2 * L ** 2))
-#            loss_p =  (torch.matmul(self.H_prep, tmp + tmp) % 2).sum()
-#            print(loss_p.item())
-        else:
-            loss = abs(torch.sin(loss_a * math.pi / 2)).sum() / (BATCH_SIZE * (2 * L ** 2 ))
-#            loss = loss_b.sum() / (-1 * BATCH_SIZE * (2 * L ** 2 - 2))
-        
+        loss = abs(torch.sin(loss_a * math.pi / 2)).sum()
+            
         return loss
     
 
@@ -298,7 +289,7 @@ def train(epoch):
     for datas in train_loader:
         datas = datas.to(device)
         optimizer.zero_grad()
-        loss = criterion(decoder(datas), datas.y, train=1)
+        loss = criterion(decoder(datas), datas.y)
         loss.backward()
         
 #        for p in decoder.parameters():
@@ -321,14 +312,14 @@ def test(decoder_a):
     for datas in test_loader:
         datas = datas.to(device)
         pred = decoder_a(datas)
-        loss += criterion(pred, datas.y, train=0).item()
+        loss += criterion(pred, datas.y).item()
         
     return loss / (run2 / BATCH_SIZE)
 
 
 if __name__ == '__main__':
-    training = 0
-    load = 1
+    training = 1
+    load = 0
     if training:
         for epoch in range(1, 211):
             train(epoch)
