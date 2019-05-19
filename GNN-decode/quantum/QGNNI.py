@@ -98,15 +98,15 @@ class MessagePassing(torch.nn.Module):
 
         update_args = [kwargs[arg] for arg in self.__update_args__]
 
-        out = self.message(*message_args)
         
+        out = self.message(*message_args)
         out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
         
         if self.flow == 'source_to_target':
             out = out + extra[edge_index[j]]
         else:
             out = torch.cat([out, extra[edge_index[j]]], dim=1)
-            
+        
         out = self.update(out, *update_args)
 
         return out
@@ -167,7 +167,7 @@ rows, cols = H.size(0), H.size(1)
 train_loader = DataLoader(train_dataset, batch_size = BATCH_SIZE, shuffle=False)
 test_loader = DataLoader(test_dataset, batch_size = BATCH_SIZE, shuffle=False)
 
-        
+  
 def a_p(grad):
 #    a = torch.where(abs(grad) < 0.1, torch.ones(grad.size()).cuda(), torch.zeros(grad.size()).cuda())
 #    print(a.sum().item() / grad.numel())
@@ -186,9 +186,16 @@ class GatedGraphConv(MessagePassing):
         self.mlp1 = torch.nn.Sequential(torch.nn.Linear(1, 10),
                        torch.nn.ReLU(),
                        torch.nn.Linear(10, 1))
-        self.mlp2 = torch.nn.Sequential(torch.nn.Linear(2, 10),
+        self.mlp2 = torch.nn.Sequential(torch.nn.Linear(1, 10),
+                       torch.nn.ReLU(),
+                       torch.nn.Linear(10, 10),
+                       torch.nn.ReLU(),
+                       torch.nn.Linear(10, 10),
                        torch.nn.ReLU(),
                        torch.nn.Linear(10, 1))
+#        self.mlp3 = torch.nn.Sequential(torch.nn.Linear(1, 10),
+#                       torch.nn.ReLU(),
+#                       torch.nn.Linear(10, 1))
         self.rnn = torch.nn.GRUCell(1, 1, bias=bias)
 
     def forward(self, m, edge_index, x):
@@ -203,11 +210,14 @@ class GatedGraphConv(MessagePassing):
         
         return m
     
-    def update(self, x_j):
+    def update(self, aggr_out):
         if self.flow == 'target_to_source':
-            return self.mlp2(x_j)
+#            return self.mlp2(x_j[:, 0].clone().unsqueeze(1)) + (self.mlp3(x_j[:, 1].clone().unsqueeze(1)))
+            return self.mlp2(aggr_out[:, 0].clone().unsqueeze(1).mul(aggr_out[:, 1].clone().unsqueeze(1)))
+        
+#            return self.mlp2(x_j)
         else:
-            return self.mlp1(x_j)
+            return self.mlp1(aggr_out)
     
 class GNNI(torch.nn.Module):
     def __init__(self, Nc):
@@ -245,7 +255,6 @@ class GNNI(torch.nn.Module):
         res = self.mlp(tmp)
 #        res.register_hook(a_p)
         res = torch.sigmoid(-1 * res)
-        res = torch.clamp(res, 1e-7, 1-1e-7)
         
         return res
 
@@ -270,9 +279,9 @@ class LossFunc(torch.nn.Module):
 #        deg = torch.where(deg==0, deg, torch.ones(deg.size()).cuda()).sum() / torch.numel(deg)
 #        print(deg.item())
         
-        loss_a = torch.matmul(self.H_prep, res + tmp)
-        loss = abs(torch.sin(loss_a * math.pi / 2)).sum()
-            
+        loss_p = torch.matmul(self.H_prep, res + tmp)
+        loss = abs(torch.sin(loss_p * math.pi / 2)).sum() / (BATCH_SIZE * 2 * L ** 2)
+        
         return loss
     
 
@@ -340,7 +349,7 @@ if __name__ == '__main__':
     if load:
         f = open('./test_loss_for_trained_model.txt','a')
         decoder_b = GNNI(Nc).to(device)
-        decoder_b.load_state_dict(torch.load('./model/decoder_parameters_epoch24.pkl'))
+        decoder_b.load_state_dict(torch.load('./model/decoder_parameters_epoch6.pkl'))
         
         loss = test(decoder_b)
         print(loss)

@@ -127,8 +127,8 @@ def gen_syn(P, L, H, run):
                 err[0, j + 2 * L * L] = 1 #Z error
         syn_prime = (np.dot(H.t(), err.T) % 2).T
         syn = syn_prime
-#        for i in range(len(syn)):
-#            syn[i] = (-1) ** syn_prime[i]
+        for i in range(len(syn)):
+            syn[i] = (-1) ** syn_prime[i]
         dataset.append(torch.from_numpy(np.concatenate([prior, syn], axis = 1)).float())
         dataset.append(torch.from_numpy(err).float())
         err = np.zeros((1, 4 * L * L))
