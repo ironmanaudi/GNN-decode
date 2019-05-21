@@ -122,13 +122,13 @@ class Gen_Data(torch.nn.Module):
     def __init__(self, SNR, num, batch_num):
         super(Gen_Data, self).__init__()
         SNR = torch.Tensor(SNR).unsqueeze(0)
-        self.Sigma = ((0.36 / (10 ** (SNR / 10)) ** 0.5).repeat(1, num)).repeat(1, batch_num)
+        self.Sigma = ((1 / (10 ** (SNR / 10)) ** 0.5).repeat(1, num)).repeat(1, batch_num)
         
     def modulate(self, inverse, x):
         if not inverse:
-            return 0.6 - 1.2 * x
+            return 1 - 2 * x
         else:
-            return (0.6 - x) / 1.2
+            return (1 - x) / 2
     
     def AWGN(self, x):
         x_prime = self.modulate(0, x)
@@ -199,7 +199,7 @@ test_dataset = CustomDataset(H, post2, x, H.size(1))
 BATCH_SIZE = 120
 lr = 3e-4
 Nc = 25
-lambda_a = 0.8
+lambda_a = 0.5
 rows, cols = H.size(0), H.size(1)
 train_loader = DataLoader(train_dataset, batch_size = BATCH_SIZE, shuffle=False)
 test_loader = DataLoader(test_dataset, batch_size = BATCH_SIZE, shuffle=False)
@@ -268,7 +268,7 @@ class GNNI(torch.nn.Module):
         
         res = self.mlp(tmp)
         res = torch.sigmoid(-1 * res)
-        res = torch.clamp(res, 1e-8, 1-1e-8)
+        res = torch.clamp(res, 1e-7, 1-1e-7)
         
         return res
 
@@ -287,7 +287,7 @@ class LossFunc(torch.nn.Module):
         
         loss_a = (1 - y).mul(torch.log(1 - pred)) + y.mul(torch.log(pred))
         loss_b = torch.matmul(self.H, res)
-        loss_c = torch.where(1-loss_b > 0, 1-loss_b, torch.zeros(loss_b.size()).cuda())
+        loss_c = abs(torch.sin(loss_b * math.pi / 2))
         loss = torch.sum(lambda_a * loss_a) / (-1 * torch.numel(loss_a)) + torch.sum((1 - lambda_a) * loss_c) / torch.numel(loss_c)
         
 #        print(loss)
@@ -346,24 +346,24 @@ if __name__ == '__main__':
             test_acc = test(decoder)
             print('Epoch: {:03d}, Test Acc: {:.15f}'.format(epoch, test_acc))
     
-    if load:
-        for i in range(6, 61, 6):
-            print(i)
-            f = open('./test_loss_for_classic.txt','a')
-            decoder_a = GNNI(Nc).to(device)
-            decoder_a.load_state_dict(torch.load('./model/decoder_parameters_epoch%d.pkl' % (i)))
-            loss = test(decoder_a)
-            print(loss)
-            f.write(' %.30f ' % (loss))
-            
-            f.close()
-
 #    if load:
-#        f = open('./test_loss_for_trained_model.txt','a')
-#        decoder_b = GNNI(Nc).to(device)
-#        decoder_b.load_state_dict(torch.load('./model/decoder_parameters_epoch66.pkl'))
-#        loss = test(decoder_b)
-#        print(loss)
-#        f.write(' %.30f ' % (loss))
-#        
-#        f.close()
+#        for i in range(6, 61, 6):
+#            print(i)
+#            f = open('./test_loss_for_classic.txt','a')
+#            decoder_a = GNNI(Nc).to(device)
+#            decoder_a.load_state_dict(torch.load('./model/decoder_parameters_epoch%d.pkl' % (i)))
+#            loss = test(decoder_a)
+#            print(loss)
+#            f.write(' %.30f ' % (loss))
+#            
+#            f.close()
+
+    if load:
+        f = open('./test_loss_for_trained_model.txt','a')
+        decoder_b = GNNI(Nc).to(device)
+        decoder_b.load_state_dict(torch.load('./model/decoder_parameters_epoch18.pkl'))
+        loss = test(decoder_b)
+        print(loss)
+        f.write(' %.30f ' % (loss))
+        
+        f.close()

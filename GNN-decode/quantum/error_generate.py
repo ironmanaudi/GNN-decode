@@ -59,19 +59,34 @@ class H_Prep():
         self.H_prep = H
         
     def Get_Identity(self):
-        H_prime = self.H
+        H_prime = self.H.clone()
         exchange = []
+        
         for i in range(self.rows):
             if H_prime[i, i] != 1:
                 for j in range(i, self.cols):
                     if H_prime[i, j] == 1:
                         H_prime[:, [i, j]] = H_prime[:, [j, i]]
                         exchange.append((i,j))
+            
+            for j in range(self.rows):
+                if (H_prime[j ,i] == 1) and (i != j):
+                    
+                    H_prime[j, :] = (H_prime[i, :] + H_prime[j, :]) % 2
+#            if H_prime[i, i] != 1:
+#                print("f")
+                
         exchange.reverse()
+        
+#        for i in range(self.rows):
+#            for j in range(self.rows):
+#                if (j != i) and (H_prime[i][j] == 1):
+#                    print(i, j)
 #        for i in range(self.rows):
 #            if H_prime[i, i] == 0:
 #                print(i,'failed')
 #        print(H[:, 0:self.rows])
+#        print(H_prime)
         return H_prime, exchange
     
     def get_H_Prep(self):
@@ -82,10 +97,11 @@ class H_Prep():
         self.H_prep = np.concatenate([self.H_prep[int(self.cols / 2) : self.cols, :], \
                                                   self.H_prep[0 : int(self.cols / 2), :]], axis = 0)
         self.H_prep = self.H_prep.T
+        
         return self.H_prep
     
-    def symplectic_product(a, b):
-        rows, cols = a.shape
+    def symplectic_product(self, a, b):
+        rows, cols = b.shape
         return np.dot(a, np.concatenate([b[:, int(cols / 2) : cols], b[:, 0 : int(cols / 2)]], axis = 1).T) % 2
     
     def get_logical(self):
@@ -153,15 +169,19 @@ def gen_syn(P, L, H, run):
 
 if __name__ == '__main__':
     
-    L = 12
+    L = 4
     H = generate_PCM(2 * L * L - 2, L)
+#    m = H.copy()
     P = [0.01]
-    dataset = gen_syn(P, L, H, 120000)
-    print(sys.getsizeof(dataset))
-#    gen_syn(P, L, H, 10)
-#    h = H_Prep(H)
-#    H_prep = h.get_H_prep()
-#    print(H_prep)
+#    dataset = gen_syn(P, L, H, 120000)
+#    print(sys.getsizeof(dataset))
+    gen_syn(P, L, H, 10)
+    
+    h = H_Prep(H)
+    
+    H_p = h.get_H_Prep()
+#    print(H)
+    print(h.symplectic_product(H_p, H).sum())
 #    print(H[0 : 8, 0 : 18])
 #    print(H[8 : 16, 18 : 36])
 

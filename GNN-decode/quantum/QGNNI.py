@@ -166,8 +166,8 @@ test_dataset = CustomDataset(H, dataset2)
 rows, cols = H.size(0), H.size(1)
 train_loader = DataLoader(train_dataset, batch_size = BATCH_SIZE, shuffle=False)
 test_loader = DataLoader(test_dataset, batch_size = BATCH_SIZE, shuffle=False)
+#print(h_prep.symplectic_product(H.t(), H_prep).sum())
 
-  
 def a_p(grad):
 #    a = torch.where(abs(grad) < 0.1, torch.ones(grad.size()).cuda(), torch.zeros(grad.size()).cuda())
 #    print(a.sum().item() / grad.numel())
