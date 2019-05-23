@@ -101,17 +101,8 @@ class MessagePassing(torch.nn.Module):
         out = self.message(*message_args)
         
         if self.flow == 'target_to_source':
-            out = torch.clamp(out, -10, 10)
             out = torch.tanh(out / 2)
-            Coeff = torch.where(out < 0, torch.ones(out.size()).cuda(), torch.zeros(out.size()).cuda())
-            out = torch.clamp(out, 1e-7, 1e10)
-            out = torch.log(abs(out))
             out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
-            Coeff = scatter_(self.aggr, Coeff, edge_index[j], dim_size=size[i])[edge_index[j]] - Coeff
-            out = torch.exp(out).mul(torch.cos(math.pi * Coeff))
-            out = torch.clamp(out, -1+1e-7, 1-1e-7)
-    #        print(out.max().item())
-            out = torch.log(1 + out) - torch.log(1 - out)
         else:
             out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
         
@@ -222,7 +213,11 @@ class GatedGraphConv(MessagePassing):
     
     def update(self, aggr_out):
         if self.flow == 'target_to_source':
-            return self.mlp2(aggr_out[:, 0].clone().unsqueeze(1)).mul(aggr_out[:, 1].clone().unsqueeze(1))
+            aggr_out[:, 0] = self.mlp2(aggr_out[:, 0].clone().unsqueeze(1)).squeeze(1)
+#            aggr_out[:, 0] = torch.log(1 + aggr_out[:, 0].clone()) - torch.log(1 - aggr_out[:, 0].clone())
+            
+            return (aggr_out[:, 0].clone().unsqueeze(1)).mul(aggr_out[:, 1].clone().unsqueeze(1))
+#            return self.mlp2(aggr_out[:, 0].clone().unsqueeze(1)).mul(aggr_out[:, 1].clone().unsqueeze(1))
 #            return aggr_out[:, 0].clone().unsqueeze(1).mul(aggr_out[:, 1].clone().unsqueeze(1))
 #            return self.mlp2(aggr_out)
         else:
@@ -236,10 +231,6 @@ class GNNI(torch.nn.Module):
         self.ggc1 = GatedGraphConv("source_to_target")
         self.ggc2 = GatedGraphConv("target_to_source")
         self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 10),
-                       torch.nn.ReLU(),
-                       torch.nn.Linear(10, 10),
-                       torch.nn.ReLU(),
-                       torch.nn.Linear(10, 10),
                        torch.nn.ReLU(),
                        torch.nn.Linear(10, 1))
     
@@ -259,7 +250,7 @@ class GNNI(torch.nn.Module):
 #        print('a', abs(x).max().item(), abs(x).min().item()
         
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
-        res = scatter_('add', m, edge_index[0], dim_size=size[0])
+        res = scatter_('add', m, edge_index[0], dim_size=size[0]) + x
         
         tmp = res[0 : rows].clone()
         
@@ -365,7 +356,7 @@ if __name__ == '__main__':
     if load:
         f = open('./test_loss_for_trained_model.txt','a')
         decoder_b = GNNI(Nc).to(device)
-        decoder_b.load_state_dict(torch.load('./model/decoder_parameters_epoch198.pkl'))
+        decoder_b.load_state_dict(torch.load('./model/decoder_parameters_epoch114.pkl'))
         
         loss = test(decoder_b)
         print(loss)
