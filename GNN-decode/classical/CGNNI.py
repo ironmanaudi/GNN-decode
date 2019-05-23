@@ -98,7 +98,20 @@ class MessagePassing(torch.nn.Module):
 
         out = self.message(*message_args)
         
-        out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
+        if self.flow == 'target_to_source':
+            out = torch.clamp(out, -10, 10)
+            out = torch.tanh(out / 2)
+            Coeff = torch.where(out < 0, torch.ones(out.size()).cuda(), torch.zeros(out.size()).cuda())
+            out = torch.clamp(out, 1e-7, 1e10)
+            out = torch.log(abs(out))
+            out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
+            Coeff = scatter_(self.aggr, Coeff, edge_index[j], dim_size=size[i])[edge_index[j]] - Coeff
+            out = torch.exp(out).mul(torch.cos(math.pi * Coeff))
+            out = torch.clamp(out, -1+1e-7, 1-1e-7)
+    #        print(out.max().item())
+            out = torch.log(1 + out) - torch.log(1 - out)
+        else:
+            out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
         
         if post is not None:
             out = out + post[edge_index[j]]
@@ -188,7 +201,7 @@ H = H_BCH
 #H = H_LDPC
 data1 = Gen_Data(SNR1, num, batch_num)
 data2 = Gen_Data(SNR2, num, batch_num)
-x = torch.zeros((1, 63))
+x = torch.ones((1, 63))
 #x = torch.zeros((1, 8))
 #x = torch.zeros((1, 11))
 #x = torch.Tensor([[1,0,0,1,0,1,0,1]])
