@@ -209,7 +209,11 @@ class GatedGraphConv(MessagePassing):
     def __init__(self, flow, aggr='add', bias=True):
         super(GatedGraphConv, self).__init__(aggr, flow)
 
-        self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 10),
+        self.flow = flow
+        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(1, 10),
+                       torch.nn.ReLU(),
+                       torch.nn.Linear(10, 1))
+        self.mlp2 = torch.nn.Sequential(torch.nn.Linear(1, 10),
                        torch.nn.ReLU(),
                        torch.nn.Linear(10, 1))
         self.rnn = torch.nn.GRUCell(1, 1, bias=bias)
@@ -223,13 +227,15 @@ class GatedGraphConv(MessagePassing):
             x = x if x.dim() == 2 else x.unsqueeze(-1)
             
         mes = self.propagate(edge_index=edge_index, size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE), x=m, post=x)
-        m = self.rnn(m, mes) + m
+        m = self.rnn(m, mes)
         
         return m
     
-    def update(self, x_j):
-        
-        return self.mlp(x_j)
+    def update(self, aggr_out):
+        if self.flow == 'target_to_source':
+            return self.mlp2(aggr_out)
+        else:
+            return aggr_out
         
 def a_p(grad):
     print(grad.sum().item())
@@ -254,9 +260,10 @@ class GNNI(torch.nn.Module):
         edge_index = torch.cat([data.edge_index[0].unsqueeze(0), data.edge_index[1].unsqueeze(0).add(rows)], dim=0)
         m = Variable(torch.zeros((edge_index.size()[1], 1)), requires_grad=False).cuda()
         
-        for i in range(self.Nc):            
+        for i in range(self.Nc):
+            m_p = m.clone()
             m = self.ggc1(m, edge_index, x)
-            m = self.ggc2(m, edge_index)
+            m = self.ggc2(m, edge_index) + m_p
             
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
         res = scatter_('add', m, edge_index[0], dim_size=size[0])
@@ -279,7 +286,7 @@ class LossFunc(torch.nn.Module):
         self.H = H.t().cuda()
 #        self.a, self.b = max(H.size()), min(H.size())
 
-    def forward(self, pred, y):
+    def forward(self, pred, y, train):
         res = pred[0 : rows].clone()
         
         for i in range(rows, len(pred), rows):
@@ -288,7 +295,10 @@ class LossFunc(torch.nn.Module):
         loss_a = (1 - y).mul(torch.log(1 - pred)) + y.mul(torch.log(pred))
         loss_b = torch.matmul(self.H, res)
         loss_c = abs(torch.sin(loss_b * math.pi / 2))
-        loss = torch.sum(lambda_a * loss_a) / (-1 * torch.numel(loss_a)) + torch.sum((1 - lambda_a) * loss_c) / torch.numel(loss_c)
+        if train:
+            loss = torch.sum(lambda_a * loss_a) / (-1 * torch.numel(loss_a)) + torch.sum((1 - lambda_a) * loss_c) / torch.numel(loss_c)
+        else:
+            loss = torch.sum(loss_a) / (-1 * torch.numel(loss_a))
         
 #        print(loss)
         
@@ -308,7 +318,7 @@ def train(epoch):
     for datas in train_loader:
         datas = datas.to(device)
         optimizer.zero_grad()
-        loss = criterion(decoder(datas), datas.y)
+        loss = criterion(decoder(datas), datas.y, train=1)
         loss.backward()
 #        for p in decoder.parameters():
 #            print(p.grad.sum().item())
@@ -331,7 +341,7 @@ def test(decoder):
     for datas in test_loader:
         datas = datas.to(device)
         pred = decoder(datas)
-        loss += criterion(pred, datas.y).item()
+        loss += criterion(pred, datas.y, train=0).item()
         i += 1
         
     return loss/i
