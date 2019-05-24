@@ -99,17 +99,8 @@ class MessagePassing(torch.nn.Module):
         out = self.message(*message_args)
         
         if self.flow == 'target_to_source':
-            out = torch.clamp(out, -10, 10)
             out = torch.tanh(out / 2)
-            Coeff = torch.where(out < 0, torch.ones(out.size()).cuda(), torch.zeros(out.size()).cuda())
-            out = torch.clamp(out, 1e-7, 1e10)
-            out = torch.log(abs(out))
             out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
-            Coeff = scatter_(self.aggr, Coeff, edge_index[j], dim_size=size[i])[edge_index[j]] - Coeff
-            out = torch.exp(out).mul(torch.cos(math.pi * Coeff))
-            out = torch.clamp(out, -1+1e-7, 1-1e-7)
-    #        print(out.max().item())
-            out = torch.log(1 + out) - torch.log(1 - out)
         else:
             out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
         
@@ -212,7 +203,7 @@ test_dataset = CustomDataset(H, post2, x, H.size(1))
 BATCH_SIZE = 120
 lr = 3e-4
 Nc = 25
-lambda_a = 0.5
+lambda_a = 0.8
 rows, cols = H.size(0), H.size(1)
 train_loader = DataLoader(train_dataset, batch_size = BATCH_SIZE, shuffle=False)
 test_loader = DataLoader(test_dataset, batch_size = BATCH_SIZE, shuffle=False)
@@ -240,9 +231,9 @@ class GatedGraphConv(MessagePassing):
             x = x if x.dim() == 2 else x.unsqueeze(-1)
             
         mes = self.propagate(edge_index=edge_index, size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE), x=m, post=x)
-        m = self.rnn(m, mes)
+#        m = self.rnn(m, mes)
         
-        return m
+        return mes
     
     def update(self, aggr_out):
         if self.flow == 'target_to_source':
@@ -279,7 +270,7 @@ class GNNI(torch.nn.Module):
             m = self.ggc2(m, edge_index) + m_p
             
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
-        res = scatter_('add', m, edge_index[0], dim_size=size[0])
+        res = scatter_('add', m, edge_index[0], dim_size=size[0]) + x
         
         tmp = res[0 : rows].clone()
         

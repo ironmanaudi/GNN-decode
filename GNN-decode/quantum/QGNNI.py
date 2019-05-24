@@ -101,7 +101,7 @@ class MessagePassing(torch.nn.Module):
         out = self.message(*message_args)
         
         if self.flow == 'target_to_source':
-            out = torch.tanh(out / 2)
+            out = torch.tanh(out / 4)
             out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
         else:
             out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
@@ -161,8 +161,8 @@ H_prep = torch.from_numpy(h_prep.get_H_Prep()).float()
 BATCH_SIZE = 512
 lr = 3e-4
 Nc = 25
-run1 = 15360
-run2 = 2048
+run1 = 20480
+run2 = 4096
 dataset1 = error_generate.gen_syn(P1, L, H, run1)
 dataset2 = error_generate.gen_syn(P2, L, H, run2)
 train_dataset = CustomDataset(H, dataset1)
@@ -356,7 +356,7 @@ if __name__ == '__main__':
     if load:
         f = open('./test_loss_for_trained_model.txt','a')
         decoder_b = GNNI(Nc).to(device)
-        decoder_b.load_state_dict(torch.load('./model/decoder_parameters_epoch114.pkl'))
+        decoder_b.load_state_dict(torch.load('./model/decoder_parameters_epoch294.pkl'))
         
         loss = test(decoder_b)
         print(loss)
