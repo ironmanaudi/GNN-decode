@@ -207,7 +207,7 @@ class GatedGraphConv(MessagePassing):
         x = x if x.dim() == 2 else x.unsqueeze(-1)
         
         mes = self.propagate(edge_index=edge_index, size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE), x=m, extra=x)
-#        m = self.rnn(m, mes)
+        m = self.rnn(m, mes)
         
         return m
     
