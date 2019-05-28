@@ -160,7 +160,7 @@ h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep()).float()
 BATCH_SIZE = 512
 lr = 3e-4
-Nc = 35
+Nc = 25
 run1 = 15360
 run2 = 2048
 dataset1 = error_generate.gen_syn(P1, L, H, run1)
@@ -216,7 +216,7 @@ class GatedGraphConv(MessagePassing):
             aggr_out[:, 0] = self.mlp2(aggr_out[:, 0].clone().unsqueeze(1)).squeeze(1)
 #            aggr_out[:, 0] = torch.log(1 + aggr_out[:, 0].clone()) - torch.log(1 - aggr_out[:, 0].clone())
             
-            return self.mlp2(aggr_out[:, 0].clone().unsqueeze(1)).mul(aggr_out[:, 1].clone().unsqueeze(1))
+            return (aggr_out[:, 0].clone().unsqueeze(1)).mul(aggr_out[:, 1].clone().unsqueeze(1))
 #            return self.mlp2(aggr_out[:, 0].clone().unsqueeze(1)).mul(aggr_out[:, 1].clone().unsqueeze(1))
 #            return aggr_out[:, 0].clone().unsqueeze(1).mul(aggr_out[:, 1].clone().unsqueeze(1))
 #            return self.mlp2(aggr_out)
