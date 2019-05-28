@@ -23,8 +23,7 @@ import error_generate
 torch.autograd.set_detect_anomaly(True)
 
 torch.set_printoptions(precision=None, threshold=5000, edgeitems=None, linewidth=None, profile=None)
-#device = torch.device('cuda：1' if torch.cuda.is_available() else 'cpu')
-device = torch.device('cuda:0')
+
 
 special_args = [
     'edge_index', 'edge_index_i', 'edge_index_j', 'size', 'size_i', 'size_j'
@@ -162,8 +161,8 @@ H_prep = torch.from_numpy(h_prep.get_H_Prep()).float()
 BATCH_SIZE = 512
 lr = 3e-4
 Nc = 25
-run1 = 20480
-run2 = 2048 #8192
+run1 = 15360
+run2 = 2048
 dataset1 = error_generate.gen_syn(P1, L, H, run1)
 dataset2 = error_generate.gen_syn(P2, L, H, run2)
 train_dataset = CustomDataset(H, dataset1)
@@ -210,19 +209,19 @@ class GatedGraphConv(MessagePassing):
         mes = self.propagate(edge_index=edge_index, size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE), x=m, extra=x)
 #        m = self.rnn(m, mes)
         
-        return mes
+        return m
     
     def update(self, aggr_out):
         if self.flow == 'target_to_source':
             aggr_out[:, 0] = self.mlp2(aggr_out[:, 0].clone().unsqueeze(1)).squeeze(1)
 #            aggr_out[:, 0] = torch.log(1 + aggr_out[:, 0].clone()) - torch.log(1 - aggr_out[:, 0].clone())
             
-            return aggr_out[:, 0].clone().unsqueeze(1).mul(aggr_out[:, 1].clone().unsqueeze(1))
+            return (aggr_out[:, 0].clone().unsqueeze(1)).mul(aggr_out[:, 1].clone().unsqueeze(1))
 #            return self.mlp2(aggr_out[:, 0].clone().unsqueeze(1)).mul(aggr_out[:, 1].clone().unsqueeze(1))
 #            return aggr_out[:, 0].clone().unsqueeze(1).mul(aggr_out[:, 1].clone().unsqueeze(1))
 #            return self.mlp2(aggr_out)
         else:
-#            return self.mlp1(aggr_out)
+#            return aggr_out
             return aggr_out
     
 class GNNI(torch.nn.Module):
@@ -241,29 +240,29 @@ class GNNI(torch.nn.Module):
         this part need to sum up the message and return
         '''
         x = data.x
-        results = []
         edge_index = torch.cat([data.edge_index[0].unsqueeze(0), data.edge_index[1].unsqueeze(0).add(rows)], dim=0)
         m = Variable(torch.zeros((edge_index.size()[1], 1)), requires_grad=False).cuda()
-        size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
         
         for i in range(self.Nc):
             m_p = m.clone()
             m = self.ggc1(m, edge_index, x)
+#            m.register_hook(a_p)
             m = self.ggc2(m, edge_index, x) + m_p
-            res = scatter_('add', m, edge_index[0], dim_size=size[0]) + x
-            
-            tmp = res[0 : rows].clone()
+#        print('a', abs(x).max().item(), abs(x).min().item()
         
-            for j in range(rows+cols, len(res), rows+cols):
-                tmp = torch.cat([tmp, res[j : j+rows].clone()], dim=0)
-            
-            res = self.mlp(tmp)
-            
-            res = torch.sigmoid(-1 * res)
-            
-            results.append(res)
+        size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
+        res = scatter_('add', m, edge_index[0], dim_size=size[0]) + x
         
-        return results
+        tmp = res[0 : rows].clone()
+        
+        for i in range(rows+cols, len(res), rows+cols):
+            tmp = torch.cat([tmp, res[i : i+rows].clone()], dim=0)
+        
+        res = self.mlp(tmp)
+        
+        res = torch.sigmoid(-1 * res)
+        
+        return res
 
 
 class LossFunc(torch.nn.Module):
@@ -292,8 +291,8 @@ class LossFunc(torch.nn.Module):
         return loss
     
 
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 decoder = GNNI(Nc).to(device)
-#decoder.load_state_dict(torch.load('./model/decoder_parameters_epoch294.pkl'))
 optimizer = torch.optim.Adam(decoder.parameters(), lr, weight_decay=5e-4)
 #optimizer = torch.optim.RMSprop(decoder.parameters(), lr, alpha=0.9)
 criterion = LossFunc(H, H_prep)
@@ -306,15 +305,8 @@ def train(epoch):
     for datas in train_loader:
         datas = datas.to(device)
         optimizer.zero_grad()
-        results = decoder(datas)
-        loss_sum = Variable(torch.zeros(1), requires_grad=True).cuda()
-        
-        for res in results:
-            loss_sum = loss_sum + criterion(res, datas.y)
-            
-        loss_sum = loss_sum / len(results)
-    
-        loss_sum.backward()
+        loss = criterion(decoder(datas), datas.y)
+        loss.backward()
         
 #        for p in decoder.parameters():
 #            print(p.grad.sum().item())
@@ -322,12 +314,12 @@ def train(epoch):
         optimizer.step()
         
     if epoch % 6 == 0:
-        f.write(' %.15f ' % (loss_sum.item()))
+        f.write(' %.15f ' % (loss.item()))
         torch.save(decoder.state_dict(), './model/decoder_parameters_epoch%d.pkl' % (epoch))
         
     f.close()
     
-    return loss_sum
+    return loss
 
 
 def test(decoder_a):
@@ -335,8 +327,8 @@ def test(decoder_a):
     loss = 0
     for datas in test_loader:
         datas = datas.to(device)
-        preds = decoder_a(datas)
-        loss += criterion(preds[len(preds) - 1], datas.y).item()
+        pred = decoder_a(datas)
+        loss += criterion(pred, datas.y).item()
         
     return loss / (run2 * 2 * L ** 2)
 #    return loss / (run2 / BATCH_SIZE)
@@ -365,7 +357,7 @@ if __name__ == '__main__':
     if load:
         f = open('./test_loss_for_trained_model.txt','a')
         decoder_b = GNNI(Nc).to(device)
-        decoder_b.load_state_dict(torch.load('./model/decoder_parameters_epoch6.pkl'))
+        decoder_b.load_state_dict(torch.load('./model/decoder_parameters_epoch114.pkl'))
         
         loss = test(decoder_b)
         print(loss)
