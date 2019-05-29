@@ -161,8 +161,8 @@ H_prep = torch.from_numpy(h_prep.get_H_Prep()).float()
 BATCH_SIZE = 512
 lr = 3e-4
 Nc = 25
-run1 = 15360
-run2 = 2048
+run1 = 40960
+run2 = 4096
 dataset1 = error_generate.gen_syn(P1, L, H, run1)
 dataset2 = error_generate.gen_syn(P2, L, H, run2)
 train_dataset = CustomDataset(H, dataset1)
@@ -188,16 +188,16 @@ class GatedGraphConv(MessagePassing):
         super(GatedGraphConv, self).__init__(aggr, flow)
         
         self.flow = flow
-        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(1, 10),
+        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(10, 20),
                        torch.nn.ReLU(),
-                       torch.nn.Linear(10, 1))
-        self.mlp2 = torch.nn.Sequential(torch.nn.Linear(1, 10),
+                       torch.nn.Linear(20, 10))
+        self.mlp2 = torch.nn.Sequential(torch.nn.Linear(10, 20),
                        torch.nn.ReLU(),
-                       torch.nn.Linear(10, 1))
-#        self.mlp3 = torch.nn.Sequential(torch.nn.Linear(1, 10),
-#                       torch.nn.ReLU(),
-#                       torch.nn.Linear(10, 1))
-        self.rnn = torch.nn.GRUCell(1, 1, bias=bias)
+                       torch.nn.Linear(20, 10))
+        self.mlp3 = torch.nn.Sequential(torch.nn.Linear(1, 20),
+                       torch.nn.ReLU(),
+                       torch.nn.Linear(20, 10))
+        self.rnn = torch.nn.GRUCell(10, 10, bias=bias)
 
     def forward(self, m, edge_index, x):
         '''
@@ -213,16 +213,16 @@ class GatedGraphConv(MessagePassing):
     
     def update(self, aggr_out):
         if self.flow == 'target_to_source':
-            aggr_out[:, 0] = self.mlp2(aggr_out[:, 0].clone().unsqueeze(1)).squeeze(1)
+            aggr_out[:, 0:10] = self.mlp2(aggr_out[:, 0:10].clone())
 #            aggr_out[:, 0] = torch.log(1 + aggr_out[:, 0].clone()) - torch.log(1 - aggr_out[:, 0].clone())
             
-            return (aggr_out[:, 0].clone().unsqueeze(1)).mul(aggr_out[:, 1].clone().unsqueeze(1))
+            return (aggr_out[:, 0:10].clone()).mul(self.mlp3(aggr_out[:, 10].clone().unsqueeze(1)))
 #            return self.mlp2(aggr_out[:, 0].clone().unsqueeze(1)).mul(aggr_out[:, 1].clone().unsqueeze(1))
 #            return aggr_out[:, 0].clone().unsqueeze(1).mul(aggr_out[:, 1].clone().unsqueeze(1))
 #            return self.mlp2(aggr_out)
         else:
 #            return aggr_out
-            return aggr_out
+            return self.mlp1(aggr_out)
     
 class GNNI(torch.nn.Module):
     def __init__(self, Nc):
@@ -231,17 +231,20 @@ class GNNI(torch.nn.Module):
         self.Nc = Nc
         self.ggc1 = GatedGraphConv("source_to_target")
         self.ggc2 = GatedGraphConv("target_to_source")
-        self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 10),
+        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(1, 20),
                        torch.nn.ReLU(),
-                       torch.nn.Linear(10, 1))
+                       torch.nn.Linear(20, 10))
+        self.mlp2 = torch.nn.Sequential(torch.nn.Linear(10, 20),
+                       torch.nn.ReLU(),
+                       torch.nn.Linear(20, 1))
     
     def forward(self, data):
         '''
         this part need to sum up the message and return
         '''
-        x = data.x
+        x = self.mlp1(data.x)
         edge_index = torch.cat([data.edge_index[0].unsqueeze(0), data.edge_index[1].unsqueeze(0).add(rows)], dim=0)
-        m = Variable(torch.zeros((edge_index.size()[1], 1)), requires_grad=False).cuda()
+        m = Variable(torch.zeros((edge_index.size()[1], 10)), requires_grad=False).cuda()
         
         for i in range(self.Nc):
             m_p = m.clone()
@@ -258,7 +261,7 @@ class GNNI(torch.nn.Module):
         for i in range(rows+cols, len(res), rows+cols):
             tmp = torch.cat([tmp, res[i : i+rows].clone()], dim=0)
         
-        res = self.mlp(tmp)
+        res = self.mlp2(tmp)
         
         res = torch.sigmoid(-1 * res)
         
