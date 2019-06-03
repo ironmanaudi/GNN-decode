@@ -209,7 +209,7 @@ class GatedGraphConv(MessagePassing):
         mes = self.propagate(edge_index=edge_index, size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE), x=m, extra=x)
         m = self.rnn(m, mes)
         
-        return m
+        return mes
     
     def update(self, aggr_out):
         if self.flow == 'target_to_source':
@@ -222,7 +222,7 @@ class GatedGraphConv(MessagePassing):
 #            return self.mlp2(aggr_out)
         else:
 #            return aggr_out
-            return self.mlp1(aggr_out)
+            return aggr_out
     
 class GNNI(torch.nn.Module):
     def __init__(self, Nc):
