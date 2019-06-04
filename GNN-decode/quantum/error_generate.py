@@ -95,8 +95,12 @@ class H_Prep():
         return self.H_prep
     
     def symplectic_product(self, a, b):
+        a = a if a.dim() == 2 else a.unsqueeze(0)
+        b = b if b.dim() == 2 else b.unsqueeze(0)
         rows, cols = b.shape
-        return np.dot(a, np.concatenate([b[:, int(cols / 2) : cols], b[:, 0 : int(cols / 2)]], axis = 1).T) % 2
+#        print(a.shape, b.shape)
+        return np.dot(a, np.concatenate([b[:, int(cols / 2) : cols].clone(), b[:, 0 : int(cols / 2)].clone()], axis = 1).T) % 2
+        
     
     '''
     那么怎么区分logical和stabilizer呢？
@@ -107,28 +111,36 @@ class H_Prep():
     如此循环直到找到K对logical。
     '''
     def get_logical(self, H_prep):
-        self.H_prep = H_prep
-        rows, cols = self.H_prep.shape
+        self.H_prep_p = H_prep.clone()
+        rows, cols = self.H_prep_p.shape
         logical = []
         for i in range(rows):
-            if self.H_prep[i, :] not in logical:
+            if not any([(self.H_prep_p[i, :] == logical_).all() for logical_ in logical]):
+                
                 for j in range(i + 1, rows):
-                    if self.H_prep[j, :] not in logical:
-                        if self.symplectic_product(self.H_prep[i, :], self.H_prep[j, :]) == 1:
-                            logical.append(self.H_prep[i, :])
-                            logical.append(self.H_prep[j, :])
+                    if not any([(self.H_prep_p[j, :] == logical_).all() for logical_ in logical]):
+                        if self.symplectic_product(self.H_prep_p[i, :], self.H_prep_p[j, :]) == 1:
+                            logical.append(self.H_prep_p[i, :])
+                            logical.append(self.H_prep_p[j, :])
+                            
                             for k in range(j + 1, rows):
-                                if self.H_prep[k, :] not in logical:
-                                    if self.symplectic_product(self.H_prep[i, :], self.H_prep[k, :]) == 1:
-                                        self.H_prep[k, :] = (self.H_prep[k, :] + self.H_prep[j, :]) % 2
+                                if not any([(self.H_prep_p[k, :] == logical_).all() for logical_ in logical]):
+                                    if self.symplectic_product(self.H_prep_p[i, :], self.H_prep_p[k, :]) == 1:
+                                        self.H_prep_p[k, :] = (self.H_prep_p[k, :] + self.H_prep_p[j, :]) % 2
                             for m in range(i + 1, rows):
-                                if self.H_prep[m, :] not in logical:
-                                    if self.symplectic_product(self.H_prep[j, :], self.H_prep[m, :]) == 1:
-                                        self.H_prep[m, :] = (self.H_prep[m, :] + self.H_prep[i, :]) % 2
+                                if not any([(self.H_prep_p[m, :] == logical_).all() for logical_ in logical]):
+                                    if self.symplectic_product(self.H_prep_p[j, :], self.H_prep_p[m, :]) == 1:
+                                        self.H_prep_p[m, :] = (self.H_prep_p[m, :] + self.H_prep_p[i, :]) % 2
                             break
-        logical = np.array(logical)
-        return logical
+                        
+        log = logical[0].unsqueeze(0)
         
+        for i in range(1, len(logical)):
+            log = torch.cat([log, logical[i].unsqueeze(0)], dim=0)
+            
+        return log
+        
+    
 '''数据集产生:error generate，要有原始的error记录及相应的syndrome'''
 def gen_syn(P, L, H, run):
     dataset = []
