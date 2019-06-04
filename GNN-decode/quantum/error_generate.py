@@ -39,12 +39,6 @@ def generate_PCM(k, L):
 
 用高斯消元法找到H的nullspace，也就是所有和H内积（别忘了用辛度规和mod2）为零的向量组成的子空间。Nullsapce里有所有的stabilizer generator
 和所有的logical X和logical Z，维度是M+2K。
-那么怎么区分logical和stabilizer呢？
-遍历nullspace的basis，每当找到一对辛内积为1的basis vectors，就得到了一对logical X 和Z。这时候可以把这一对存下来，剩下需要遍历的basis
-数目就 -2了。
-在继续遍历之前，我们要确保剩下的basis中不含有刚刚找到的X和Z。做法就是，用刚刚找到的X和所有剩下的basis做内积。如果结果是1，说明这个basis
-含有相应的Z，只要把Z加上就可以去掉（一个向量加自己 = 0 mod2）。用同样的方法去掉X。
-如此循环直到找到K对logical。
 '''
 '''
 null space over GF(2) reference:
@@ -104,8 +98,16 @@ class H_Prep():
         rows, cols = b.shape
         return np.dot(a, np.concatenate([b[:, int(cols / 2) : cols], b[:, 0 : int(cols / 2)]], axis = 1).T) % 2
     
-    def get_logical(self):
-        self.H_prep = self.get_H_Prep()
+    '''
+    那么怎么区分logical和stabilizer呢？
+    遍历nullspace的basis，每当找到一对辛内积为1的basis vectors，就得到了一对logical X 和Z。这时候可以把这一对存下来，剩下需要遍历的basis
+    数目就 -2了。
+    在继续遍历之前，我们要确保剩下的basis中不含有刚刚找到的X和Z。做法就是，用刚刚找到的X和所有剩下的basis做内积。如果结果是1，说明这个basis
+    含有相应的Z，只要把Z加上就可以去掉（一个向量加自己 = 0 mod2）。用同样的方法去掉X。
+    如此循环直到找到K对logical。
+    '''
+    def get_logical(self, H_prep):
+        self.H_prep = H_prep
         rows, cols = self.H_prep.shape
         logical = []
         for i in range(rows):
@@ -118,11 +120,11 @@ class H_Prep():
                             for k in range(j + 1, rows):
                                 if self.H_prep[k, :] not in logical:
                                     if self.symplectic_product(self.H_prep[i, :], self.H_prep[k, :]) == 1:
-                                        self.H_prep[k, :] += self.H_prep[j, :]
+                                        self.H_prep[k, :] = (self.H_prep[k, :] + self.H_prep[j, :]) % 2
                             for m in range(i + 1, rows):
                                 if self.H_prep[m, :] not in logical:
                                     if self.symplectic_product(self.H_prep[j, :], self.H_prep[m, :]) == 1:
-                                        self.H_prep[m, :] += self.H_prep[i, :]
+                                        self.H_prep[m, :] = (self.H_prep[m, :] + self.H_prep[i, :]) % 2
                             break
         logical = np.array(logical)
         return logical
@@ -145,8 +147,8 @@ def gen_syn(P, L, H, run):
         syn = syn_prime
         for i in range(len(syn)):
             syn[i] = (-1) ** syn_prime[i]
-        dataset.append(torch.from_numpy(np.concatenate([prior, syn], axis = 1)).float())
-        dataset.append(torch.from_numpy(err).float())
+        dataset.append(torch.from_numpy(np.concatenate([prior, syn], axis = 1)))
+        dataset.append(torch.from_numpy(err))
         err = np.zeros((1, 4 * L * L))
     return dataset
 
