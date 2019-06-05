@@ -152,7 +152,7 @@ class CustomDataset(InMemoryDataset):
 
 
 torch.autograd.set_detect_anomaly(True)
-L = 4
+L = 8
 P1 = [0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08]  #, 0.07, 0.08, 0.09, 0.1, 0.11, 0.12]
 P2 = [0.01]
 H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
@@ -175,9 +175,9 @@ test_loader = DataLoader(test_dataset, batch_size = BATCH_SIZE, shuffle=False)
 H_hop_one_idx = H.to_sparse()._indices()
 length = H_hop_one_idx.size()[1]
 H_hop_one_idx = torch.cat([H_hop_one_idx[0].clone().unsqueeze(0), H_hop_one_idx[1].clone().unsqueeze(0)+rows], dim=0)
-H_hop_one_idx = torch.cat([torch.cat([H_hop_one_idx, H_hop_one_idx[1].clone().unsqueeze(0), \
+H_hop_one_idx = torch.cat([H_hop_one_idx, torch.cat([H_hop_one_idx[1].clone().unsqueeze(0), \
                                       H_hop_one_idx[0].clone().unsqueeze(0)], dim=0)], dim=1)
-
+#print(H_hop_one_idx.size())
 v = torch.ones((H_hop_one_idx.size()[1]), dtype=torch.float64)
 H_hop_one = torch.sparse.FloatTensor(H_hop_one_idx, v, torch.Size([rows+cols,rows+cols])).to_dense().double()
 H_hop_three = torch.matmul(torch.matmul(H_hop_one, H_hop_one), H_hop_one)
@@ -231,10 +231,13 @@ class GraphConv(MessagePassing):
         mes = self.propagate(edge_index=edge_indices[0], size=((rows+cols) * BATCH_SIZE, \
                              (rows+cols) * BATCH_SIZE), x=m, extra=x, hop=1)
         
+        
         if self.flow == "target_to_source":
+            mes = mes.unsqueeze(1)
+            
             for i in range(1, len(edge_indices)):
-                mes = torch.cat([self.propagate(edge_index=edge_indices[i], size=((rows+cols) * BATCH_SIZE,\
-                                                (rows+cols) * BATCH_SIZE), x=m, extra=x, hop=i)], dim=1)
+                mes = torch.cat([mes, self.propagate(edge_index=edge_indices[i], size=((rows+cols) * BATCH_SIZE,\
+                                                (rows+cols) * BATCH_SIZE), x=m, extra=x, hop=i).unsqueeze(1)], dim=1)
             
             return self.mlp(mes)
         
@@ -273,9 +276,9 @@ class GNNI(torch.nn.Module):
         x = data.x
         m = Variable(torch.zeros((edge_indices[0].size()[1], 1), dtype = torch.float64), requires_grad=False).cuda()
         
-        for i in range(len(edge_indices)):
-            edge_indices[i] = torch.cat([edge_indices[i][0].clone().unsqueeze(0), \
-                                        edge_indices[i][1].clone().unsqueeze(0).add(rows)], dim=0)
+#        for i in range(len(edge_indices)):
+#            edge_indices[i] = torch.cat([edge_indices[i][0].clone().unsqueeze(0), \
+#                                        edge_indices[i][1].clone().unsqueeze(0).add(rows)], dim=0)
         
         for i in range(self.Nc):
             m_p = m.clone()
