@@ -112,8 +112,10 @@ class H_Prep():
     '''
     def get_logical(self, H_prep):
         self.H_prep_p = H_prep.clone()
+        stab = H_prep.clone()
         rows, cols = self.H_prep_p.shape
         logical = []
+        
         for i in range(rows):
             if not any([(self.H_prep_p[i, :] == logical_).all() for logical_ in logical]):
                 
@@ -127,18 +129,25 @@ class H_Prep():
                                 if not any([(self.H_prep_p[k, :] == logical_).all() for logical_ in logical]):
                                     if self.symplectic_product(self.H_prep_p[i, :], self.H_prep_p[k, :]) == 1:
                                         self.H_prep_p[k, :] = (self.H_prep_p[k, :] + self.H_prep_p[j, :]) % 2
+                                        
                             for m in range(i + 1, rows):
                                 if not any([(self.H_prep_p[m, :] == logical_).all() for logical_ in logical]):
                                     if self.symplectic_product(self.H_prep_p[j, :], self.H_prep_p[m, :]) == 1:
                                         self.H_prep_p[m, :] = (self.H_prep_p[m, :] + self.H_prep_p[i, :]) % 2
+                                 
                             break
-                        
+        
+        for i in range(rows):
+            for item in logical:
+                if all([(stab[i, :] == item).all()]):
+                    stab[i, :] -= item
+                
         log = logical[0].unsqueeze(0)
         
         for i in range(1, len(logical)):
             log = torch.cat([log, logical[i].unsqueeze(0)], dim=0)
             
-        return log
+        return log, stab
         
     
 '''数据集产生:error generate，要有原始的error记录及相应的syndrome'''
