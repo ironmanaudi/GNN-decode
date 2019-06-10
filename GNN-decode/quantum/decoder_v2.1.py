@@ -107,7 +107,8 @@ class MessagePassing(torch.nn.Module):
             out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
         
         if self.flow == 'source_to_target':
-            out = out + extra[edge_index[j]]
+#            out = out + extra[edge_index[j]]
+            out = torch.cat([out, extra[edge_index[j]]], dim=1)
         else:
             out = torch.cat([out, extra[edge_index[j]]], dim=1)
 #        out = torch.cat([out, extra[edge_index[j]]], dim=1)
@@ -152,9 +153,9 @@ class CustomDataset(InMemoryDataset):
 
 
 torch.autograd.set_detect_anomaly(True)
-L = 8
-#P1 = [0.03, 0.04, 0.05, 0.06, 0.07, 0.08]
-P1 = [0.01,0.04,0.07,0.1,0.13,0.16]
+L = 4
+P1 = [0.01,0.03,0.05, 0.07, 0.09, 0.11, 0.13, 0.15,0.17,0.19,0.20,0.21]
+#P1 = [0.01,0.04,0.07,0.1,0.13,0.16]
 P2 = [0.1]
 H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
 h_prep = error_generate.H_Prep(H.t())
@@ -162,7 +163,7 @@ H_prep = torch.from_numpy(h_prep.get_H_Prep())
 #print(H_prep.size())
 BATCH_SIZE = 128
 lr = 3e-4
-Nc = 15
+Nc = 10
 run1 = 40960
 run2 = 8192
 dataset1 = error_generate.gen_syn(P1, L, H, run1)
@@ -191,13 +192,22 @@ class GraphConv(MessagePassing):
         super(GraphConv, self).__init__(aggr, flow)
         
         self.flow = flow
-        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
+        self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
                        torch.nn.ReLU(),
-                       torch.nn.Linear(10, 1).double())
-        self.mlp2 = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
+                       torch.nn.Linear(10, 4).double())
+        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(8, 10).double(),
                        torch.nn.ReLU(),
-                       torch.nn.Linear(10, 1).double())
-        self.rnn = torch.nn.GRUCell(1, 1, bias=bias).double()
+                       torch.nn.Linear(10, 4).double())
+        self.mlp2 = torch.nn.Sequential(torch.nn.Linear(8, 10).double(),
+                       torch.nn.ReLU(),
+                       torch.nn.Linear(10, 4).double())
+#        self.mlp3 = torch.nn.Sequential(torch.nn.Linear(2, 10).double(),
+#                       torch.nn.ReLU(),
+#                       torch.nn.Linear(10, 1).double())
+#        self.mlp4 = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
+#                       torch.nn.ReLU(),
+#                       torch.nn.Linear(10, 1).double())
+#        self.rnn = torch.nn.GRUCell(1, 1, bias=bias).double()
         
     def forward(self, m, edge_index, x):
         '''
@@ -205,23 +215,25 @@ class GraphConv(MessagePassing):
         the proir knoledge to update rather than the last hidden state of x
         '''
         x = x if x.dim() == 2 else x.unsqueeze(-1)
+        x = self.mlp(x)
         
         mes = self.propagate(edge_index=edge_index, size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE), x=m, extra=x)
-        mes = self.rnn(mes, m)
+#        mes = self.rnn(mes, m)
         
         return mes
      
     def update(self, aggr_out):
         if self.flow == 'target_to_source':
-            aggr_out[:, 0] = self.mlp2(aggr_out[:, 0].clone().unsqueeze(1)).squeeze(1)
+#            aggr_out[:, 0] = self.mlp2(aggr_out[:, 0].clone().unsqueeze(1)).squeeze(1)
             
-            return (aggr_out[:, 0].clone().unsqueeze(1)).mul(aggr_out[:, 1].clone().unsqueeze(1))
+#            return (aggr_out[:, 0].clone().unsqueeze(1))+self.mlp3(aggr_out[:, 1].clone().unsqueeze(1))
+            return self.mlp2(aggr_out)
         else:
 #            aggr_out[:, 0] = self.mlp1(aggr_out[:, 0].clone().unsqueeze(1)).squeeze(1)
             
 #            return (aggr_out[:, 0].clone().unsqueeze(1)).mul(aggr_out[:, 1].clone().unsqueeze(1))
-            return aggr_out
-    
+#            return self.mlp1(aggr_out[:, 0].clone().unsqueeze(1))+self.mlp2(aggr_out[:, 1].clone().unsqueeze(1))
+            return self.mlp1(aggr_out)
     
 class GNNI(torch.nn.Module):
     def __init__(self, Nc):
@@ -232,7 +244,10 @@ class GNNI(torch.nn.Module):
         self.ggc2 = GraphConv("target_to_source")
         self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
                        torch.nn.ReLU(),
-                       torch.nn.Linear(10, 1).double())
+                       torch.nn.Linear(10, 4).double())
+        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
+                       torch.nn.ReLU(),
+                       torch.nn.Linear(10, 4).double())
     
     def forward(self, data):
         '''
@@ -240,17 +255,17 @@ class GNNI(torch.nn.Module):
         '''
         x = data.x
         edge_index = torch.cat([data.edge_index[0].clone().unsqueeze(0), data.edge_index[1].clone().unsqueeze(0).add(rows)], dim=0)
-        m = Variable(torch.zeros((edge_index.size()[1], 1), dtype = torch.float64), requires_grad=False).cuda()
+        m = Variable(torch.zeros((edge_index.size()[1], 4), dtype = torch.float64), requires_grad=False).cuda()
         
         for i in range(self.Nc):
             m_p = m.clone()
             m = self.ggc1(m, edge_index, x)
 #            m.register_hook(a_p)
-            m = self.ggc2(m, edge_index, x) + m_p
+            m = self.ggc2(m, edge_index, x)
 #        print('a', abs(x).max().item(), abs(x).min().item()
         
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
-        res = scatter_('add', m, edge_index[0], dim_size=size[0]) + x
+        res = scatter_('add', m, edge_index[0], dim_size=size[0]) + self.mlp1(x)
         
         tmp = res[0 : rows].clone()
         
@@ -259,7 +274,7 @@ class GNNI(torch.nn.Module):
         
         res = self.mlp(tmp)
         
-        res = torch.sigmoid(-1 * res)
+        res = torch.sigmoid(res)
         
         return res
 
@@ -324,7 +339,7 @@ def train(epoch):
         
     if epoch % 6 == 0:
         f.write(' %.15f ' % (loss.item()))
-        torch.save(decoder.state_dict(), './model1/decoder_parameters_epoch%d.pkl' % (epoch))
+        torch.save(decoder.state_dict(), './model2/decoder_parameters_epoch%d.pkl' % (epoch))
         
     f.close()
     
