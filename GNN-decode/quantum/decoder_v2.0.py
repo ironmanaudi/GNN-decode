@@ -153,9 +153,9 @@ class CustomDataset(InMemoryDataset):
 
 
 torch.autograd.set_detect_anomaly(True)
-L = 8
+L = 4
 #lambda_a = 0.5
-P1 = [0.01,0.03,0.05, 0.07, 0.09, 0.11, 0.13, 0.15,0.17,0.19,0.20,0.21]
+P1 = [0.01,0.03,0.05, 0.07, 0.09, 0.11, 0.13]#, 0.15,0.17,0.19,0.20,0.21]
 #P1 = [0.01,0.02,0.03,0.04,0.05,0.06, 0.07,0.08]
 #P1 = [0.01,0.04,0.07,0.1,0.13,0.16]
 P2 = [0.1]
@@ -195,23 +195,21 @@ class GraphConv(MessagePassing):
         super(GraphConv, self).__init__(aggr, flow)
         
         self.flow = flow
-#        self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
-#                       torch.nn.ReLU(),
-#                       torch.nn.Linear(10, 1).double())
+        self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
+                       torch.nn.ReLU(),
+                       torch.nn.Linear(10, 1).double())
 #        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
 #                       torch.nn.ReLU(),
 #                       torch.nn.Linear(10, 1).double())
         self.mlp1 = torch.nn.Sequential(torch.nn.Linear(2, 10).double(),
                        torch.nn.ReLU(),
-                       torch.nn.Linear(10, 10).double(),
-                       torch.nn.ReLU(),
                        torch.nn.Linear(10, 1).double())
         self.mlp2 = torch.nn.Sequential(torch.nn.Linear(2, 10).double(),
                        torch.nn.ReLU(),
-                       torch.nn.Linear(10, 10).double(),
-                       torch.nn.ReLU(),
                        torch.nn.Linear(10, 1).double())
-
+        self.rnn1 = torch.nn.GRUCell(1, 1, bias=bias).double()
+        self.rnn2 = torch.nn.GRUCell(1, 1, bias=bias).double()
+        
     def forward(self, m, edge_index, x):
         '''
         GGC behaviour need to be modified to fellow BP decoding, which will have 2 phases of iteration; also note that phase2 use 
@@ -221,11 +219,14 @@ class GraphConv(MessagePassing):
         
         mes = self.propagate(edge_index=edge_index, size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE), x=m, extra=x)
         
-        return mes
+        if self.flow == 'target_to_source': m = self.rnn2(m, mes)
+        else: m = self.rnn1(m, mes)
+        
+        return m
     
     def update(self, aggr_out):
         if self.flow == 'target_to_source':
-#            aggr_out[:, 0] = self.mlp(aggr_out[:, 0].clone().unsqueeze(1)).squeeze(1)
+#            aggr_out[:, 1] = self.mlp(aggr_out[:, 1].clone().unsqueeze(1)).squeeze(1)
             
 #            return self.mlp(aggr_out[:, 0].clone().unsqueeze(1)) + self.mlp2(aggr_out[:, 1].clone().unsqueeze(1))
             return self.mlp2(aggr_out)
@@ -271,7 +272,7 @@ class GNNI(torch.nn.Module):
         
 #        res = self.mlp(tmp)
         
-        res = torch.sigmoid(res)
+        res = torch.sigmoid(-1 * res)
         
         return res
 
