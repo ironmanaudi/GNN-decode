@@ -153,9 +153,10 @@ class CustomDataset(InMemoryDataset):
 
 
 torch.autograd.set_detect_anomaly(True)
-L = 4
+L = 8
 #lambda_a = 0.5
-P1 = [0.01,0.03,0.05, 0.07, 0.09, 0.11, 0.13]#, 0.15,0.17,0.19,0.20,0.21]
+#P1 = [0.01,0.03,0.05, 0.07, 0.09, 0.11, 0.13]#, 0.15,0.17,0.19,0.20,0.21]
+P1 = [0.1]
 #P1 = [0.01,0.02,0.03,0.04,0.05,0.06, 0.07,0.08]
 #P1 = [0.01,0.04,0.07,0.1,0.13,0.16]
 P2 = [0.1]
@@ -165,7 +166,7 @@ H_prep = torch.from_numpy(h_prep.get_H_Prep())
 #print(H_prep.size())
 BATCH_SIZE = 128
 lr = 3e-4
-Nc = 10
+Nc = 15
 run1 = 40960
 run2 = 8192
 dataset1 = error_generate.gen_syn(P1, L, H, run1)
@@ -198,9 +199,9 @@ class GraphConv(MessagePassing):
         self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
                        torch.nn.ReLU(),
                        torch.nn.Linear(10, 1).double())
-#        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
-#                       torch.nn.ReLU(),
-#                       torch.nn.Linear(10, 1).double())
+        self.mlp_p = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
+                       torch.nn.ReLU(),
+                       torch.nn.Linear(10, 1).double())
         self.mlp1 = torch.nn.Sequential(torch.nn.Linear(2, 10).double(),
                        torch.nn.ReLU(),
                        torch.nn.Linear(10, 1).double())
@@ -217,18 +218,21 @@ class GraphConv(MessagePassing):
         '''
         x = x if x.dim() == 2 else x.unsqueeze(-1)
         
+        if self.flow == 'target_to_source': m = self.mlp(m)
+        else: m = self.mlp_p(m)
+        
         mes = self.propagate(edge_index=edge_index, size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE), x=m, extra=x)
         
-        if self.flow == 'target_to_source': m = self.rnn2(m, mes)
-        else: m = self.rnn1(m, mes)
+        if self.flow == 'target_to_source': mes = self.rnn2(mes, m)
+        else: mes = self.rnn1(mes, m)
         
-        return m
+        return mes
     
     def update(self, aggr_out):
         if self.flow == 'target_to_source':
-#            aggr_out[:, 1] = self.mlp(aggr_out[:, 1].clone().unsqueeze(1)).squeeze(1)
+#            aggr_out[:, 0] = self.mlp(aggr_out[:, 0].clone().unsqueeze(1)).squeeze(1)
             
-#            return self.mlp(aggr_out[:, 0].clone().unsqueeze(1)) + self.mlp2(aggr_out[:, 1].clone().unsqueeze(1))
+#            return aggr_out[:, 0].clone().unsqueeze(1).mul(aggr_out[:, 1].clone().unsqueeze(1))
             return self.mlp2(aggr_out)
         else:
             return self.mlp1(aggr_out)
@@ -263,7 +267,7 @@ class GNNI(torch.nn.Module):
 #        print('a', abs(x).max().item(), abs(x).min().item()
         
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
-        res = self.mlp(scatter_('add', m, edge_index[0], dim_size=size[0])) + x
+        res = self.mlp(scatter_('add', m, edge_index[0], dim_size=size[0]))
         
         tmp = res[0 : rows].clone()
         
@@ -272,7 +276,7 @@ class GNNI(torch.nn.Module):
         
 #        res = self.mlp(tmp)
         
-        res = torch.sigmoid(-1 * res)
+        res = torch.sigmoid(res)
         
         return res
 
