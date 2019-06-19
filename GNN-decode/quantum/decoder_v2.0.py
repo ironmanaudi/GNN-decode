@@ -342,6 +342,7 @@ def train(epoch):
         
 #        for p in decoder.parameters():
 #            print(p.grad.sum().item())
+        torch.nn.utils.clip_grad_norm_(decoder.parameters(), 0.65)
         
         optimizer.step()
         
