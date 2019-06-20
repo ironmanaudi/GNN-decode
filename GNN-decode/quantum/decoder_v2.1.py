@@ -19,6 +19,9 @@ import torch.nn.functional as F
 from torch_geometric.data import DataLoader
 import error_generate
 
+'''
+PDP version of decoder
+'''
 
 torch.autograd.set_detect_anomaly(True)
 
@@ -57,7 +60,7 @@ class MessagePassing(torch.nn.Module):
 
         i, j = (0, 1) if self.flow == 'target_to_source' else (1, 0)
         ij = {"_i": i, "_j": j}
-
+        
         message_args = []
         for arg in self.__message_args__:
             if arg[-2:] in ij.keys():
@@ -79,11 +82,11 @@ class MessagePassing(torch.nn.Module):
 #                    if size[idx] != tmp.size(0):
 #                        raise ValueError(__size_error_msg__)
 
-#                    tmp = torch.index_select(tmp, 0, edge_index[idx])
+#                    tmp = torch.index_select(tmp, 0, edge_index[idx]) # function of this step
                     message_args.append(tmp)
             else:
                 message_args.append(kwargs[arg])
-
+                
         size[0] = size[1] if size[0] is None else size[0]
         size[1] = size[0] if size[1] is None else size[1]
 
@@ -111,7 +114,7 @@ class MessagePassing(torch.nn.Module):
             out = torch.cat([out, extra[edge_index[j]]], dim=1)
         else:
             out = torch.cat([out, extra[edge_index[j]]], dim=1)
-#        out = torch.cat([out, extra[edge_index[j]]], dim=1)
+#        print(self.flow, extra[edge_index[j]])
         out = self.update(out, *update_args)
 
         return out
@@ -153,8 +156,11 @@ class CustomDataset(InMemoryDataset):
 
 
 torch.autograd.set_detect_anomaly(True)
-L = 4
-P1 = [0.01,0.03,0.05, 0.07, 0.09, 0.11, 0.13, 0.15,0.17,0.19,0.20,0.21]
+L = 8
+#lambda_a = 0.5
+#P1 = [0.01,0.03,0.05, 0.07, 0.09, 0.11, 0.13]#, 0.15,0.17,0.19,0.20,0.21]
+P1 = [0.1]
+#P1 = [0.01,0.02,0.03,0.04,0.05,0.06, 0.07,0.08]
 #P1 = [0.01,0.04,0.07,0.1,0.13,0.16]
 P2 = [0.1]
 H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
@@ -163,7 +169,7 @@ H_prep = torch.from_numpy(h_prep.get_H_Prep())
 #print(H_prep.size())
 BATCH_SIZE = 128
 lr = 3e-4
-Nc = 10
+Nc = 12
 run1 = 40960
 run2 = 8192
 dataset1 = error_generate.gen_syn(P1, L, H, run1)
@@ -176,6 +182,7 @@ test_loader = DataLoader(test_dataset, batch_size = BATCH_SIZE, shuffle=False)
 #print(h_prep.symplectic_product(H.t(), H_prep).sum())
 logical, stab = h_prep.get_logical(H_prep)
 logical, stab = logical.cuda(), stab.cuda()
+
 
 def a_p(grad):
     a = torch.where(abs(grad) < 1e-1, torch.ones(grad.size()).cuda(), torch.zeros(grad.size()).cuda())
@@ -194,20 +201,18 @@ class GraphConv(MessagePassing):
         self.flow = flow
         self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
                        torch.nn.ReLU(),
-                       torch.nn.Linear(10, 4).double())
-        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(8, 10).double(),
+                       torch.nn.Linear(10, 1).double())
+        self.mlp_p = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
                        torch.nn.ReLU(),
-                       torch.nn.Linear(10, 4).double())
-        self.mlp2 = torch.nn.Sequential(torch.nn.Linear(8, 10).double(),
+                       torch.nn.Linear(10, 1).double())
+        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(2, 10).double(),
                        torch.nn.ReLU(),
-                       torch.nn.Linear(10, 4).double())
-#        self.mlp3 = torch.nn.Sequential(torch.nn.Linear(2, 10).double(),
-#                       torch.nn.ReLU(),
-#                       torch.nn.Linear(10, 1).double())
-#        self.mlp4 = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
-#                       torch.nn.ReLU(),
-#                       torch.nn.Linear(10, 1).double())
-#        self.rnn = torch.nn.GRUCell(1, 1, bias=bias).double()
+                       torch.nn.Linear(10, 1).double())
+        self.mlp2 = torch.nn.Sequential(torch.nn.Linear(2, 10).double(),
+                       torch.nn.ReLU(),
+                       torch.nn.Linear(10, 1).double())
+        self.rnn1 = torch.nn.GRUCell(1, 1, bias=bias).double()
+        self.rnn2 = torch.nn.GRUCell(1, 1, bias=bias).double()
         
     def forward(self, m, edge_index, x):
         '''
@@ -215,25 +220,28 @@ class GraphConv(MessagePassing):
         the proir knoledge to update rather than the last hidden state of x
         '''
         x = x if x.dim() == 2 else x.unsqueeze(-1)
-        x = self.mlp(x)
+        
+        if self.flow == 'target_to_source': m = self.mlp(m)
+        else: m = self.mlp_p(m)
         
         mes = self.propagate(edge_index=edge_index, size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE), x=m, extra=x)
-#        mes = self.rnn(mes, m)
+        
+        if self.flow == 'target_to_source': mes = self.rnn2(mes, m)
+        else: mes = self.rnn1(mes, m)
         
         return mes
-     
+    
     def update(self, aggr_out):
         if self.flow == 'target_to_source':
-#            aggr_out[:, 0] = self.mlp2(aggr_out[:, 0].clone().unsqueeze(1)).squeeze(1)
+#            aggr_out[:, 0] = self.mlp(aggr_out[:, 0].clone().unsqueeze(1)).squeeze(1)
             
-#            return (aggr_out[:, 0].clone().unsqueeze(1))+self.mlp3(aggr_out[:, 1].clone().unsqueeze(1))
+#            return aggr_out[:, 0].clone().unsqueeze(1).mul(aggr_out[:, 1].clone().unsqueeze(1))
             return self.mlp2(aggr_out)
         else:
-#            aggr_out[:, 0] = self.mlp1(aggr_out[:, 0].clone().unsqueeze(1)).squeeze(1)
-            
-#            return (aggr_out[:, 0].clone().unsqueeze(1)).mul(aggr_out[:, 1].clone().unsqueeze(1))
-#            return self.mlp1(aggr_out[:, 0].clone().unsqueeze(1))+self.mlp2(aggr_out[:, 1].clone().unsqueeze(1))
             return self.mlp1(aggr_out)
+#            return self.mlp(aggr_out[:, 0].clone().unsqueeze(1)) + self.mlp1(aggr_out[:, 1].clone().unsqueeze(1))
+#            return aggr_out
+    
     
 class GNNI(torch.nn.Module):
     def __init__(self, Nc):
@@ -244,10 +252,7 @@ class GNNI(torch.nn.Module):
         self.ggc2 = GraphConv("target_to_source")
         self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
                        torch.nn.ReLU(),
-                       torch.nn.Linear(10, 4).double())
-        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
-                       torch.nn.ReLU(),
-                       torch.nn.Linear(10, 4).double())
+                       torch.nn.Linear(10, 1).double())
     
     def forward(self, data):
         '''
@@ -255,24 +260,24 @@ class GNNI(torch.nn.Module):
         '''
         x = data.x
         edge_index = torch.cat([data.edge_index[0].clone().unsqueeze(0), data.edge_index[1].clone().unsqueeze(0).add(rows)], dim=0)
-        m = Variable(torch.zeros((edge_index.size()[1], 4), dtype = torch.float64), requires_grad=False).cuda()
+        m = Variable(torch.zeros((edge_index.size()[1], 1), dtype = torch.float64), requires_grad=False).cuda()
         
         for i in range(self.Nc):
             m_p = m.clone()
             m = self.ggc1(m, edge_index, x)
 #            m.register_hook(a_p)
             m = self.ggc2(m, edge_index, x)
-#        print('a', abs(x).max().item(), abs(x).min().item()
-        
+            
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
-        res = scatter_('add', m, edge_index[0], dim_size=size[0]) + self.mlp1(x)
+        res = scatter_('add', m, edge_index[0], dim_size=size[0])
         
-        tmp = res[0 : rows].clone()
+        idx = torch.LongTensor([x for x in range(rows)]).cuda()
         
         for i in range(rows+cols, len(res), rows+cols):
-            tmp = torch.cat([tmp, res[i : i+rows].clone()], dim=0)
+            idx = torch.cat([idx, torch.LongTensor([x for x in range(i, i+rows)]).cuda()], dim=0)
         
-        res = self.mlp(tmp)
+        res = res[idx].clone()
+        res = self.mlp(res) + x[idx]
         
         res = torch.sigmoid(res)
         
@@ -284,16 +289,19 @@ class LossFunc(torch.nn.Module):
         super(LossFunc, self).__init__()
         
         self.a, self.b = max(H.size()), min(H.size())
-#        self.H_prep = Variable(H_prep).cuda()
         self.H_prep = H_prep.cuda()
         
-    def forward(self, pred, y):
-        tmp = y[0 : self.a].clone()
+    def forward(self, pred, datas):
+        tmp = datas.y[0 : self.a].clone()
         res = pred[0 : self.a].clone()
+        syn = datas.x[self.a : self.a+self.b]
         
-        for i in range(self.a, len(y), self.a):
-            tmp = torch.cat([tmp, y[i : i+self.a].clone()], dim=1)
+        for i in range(self.a, len(datas.y), self.a):
+#            tmp = torch.cat([tmp, datas.y[i : i+self.a].clone()], dim=1)
             res = torch.cat([res, pred[i : i+self.a].clone()], dim=1)
+              
+        for i in range(self.a+self.b, len(datas.x), self.a+self.b):
+            syn = torch.cat([syn, datas.x[i+self.a : i+self.a+self.b].clone()], dim=1)
 
 #        deg = ((torch.where(res>0.5, torch.ones(res.size()).cuda(), torch.zeros(res.size()).cuda()) + tmp) % 2)
 #        deg = torch.where(deg==0, deg, torch.ones(deg.size()).cuda()).sum() / torch.numel(deg)
@@ -304,9 +312,11 @@ class LossFunc(torch.nn.Module):
 #                             torch.zeros(res.size(), dtype=torch.float64).cuda()).cuda()
 #        err = (pred_p + tmp) % 2
 #        print('a', tmp.sum().item()/tmp.numel(), err.sum().item()/tmp.numel())
-#        loss_p = torch.matmul(self.H_prep, tmp + res)
-        loss_p = torch.matmul(stab, tmp + res)
+        loss_p = torch.matmul(H.t().cuda(), tmp + res)
         loss = abs(torch.sin(loss_p * math.pi / 2)).sum()
+#        loss_a = torch.matmul(H.t().cuda(), res) + syn
+#        loss_b = torch.matmul(logical, tmp + res)
+#        loss = abs(torch.sin(loss_a * math.pi / 2)).sum() + abs(torch.sin(loss_b * math.pi / 2)).sum()
 #        log_loss = torch.matmul(logical, tmp)
 #        log_loss = abs(torch.sin(log_loss * math.pi / 2)).sum()
 #        print('b',loss_p.sum().item(), torch.matmul(self.H_prep, err).sum().item())
@@ -316,7 +326,7 @@ class LossFunc(torch.nn.Module):
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 decoder = GNNI(Nc).to(device)
-#decoder.load_state_dict(torch.load('./model/decoder_parameters_epoch132.pkl'))
+#decoder.load_state_dict(torch.load('./model1/decoder_parameters_epoch6.pkl'))
 optimizer = torch.optim.Adam(decoder.parameters(), lr, weight_decay=5e-4)
 #optimizer = torch.optim.RMSprop(decoder.parameters(), lr, alpha=0.9)
 criterion = LossFunc(H, H_prep)
@@ -329,11 +339,12 @@ def train(epoch):
     for datas in train_loader:
         datas = datas.to(device)
         optimizer.zero_grad()
-        loss = criterion(decoder(datas), datas.y)
+        loss = criterion(decoder(datas), datas)
         loss.backward()
         
 #        for p in decoder.parameters():
 #            print(p.grad.sum().item())
+#        torch.nn.utils.clip_grad_norm_(decoder.parameters(), 0.65)
         
         optimizer.step()
         
@@ -354,7 +365,7 @@ def test(decoder_a):
         pred = decoder_a(datas)
         
 #        print(pred)
-        loss += criterion(pred, datas.y).item()
+        loss += criterion(pred, datas).item()
         
     return loss / (run2 * 2 * L ** 2)
 #    return loss / run2
