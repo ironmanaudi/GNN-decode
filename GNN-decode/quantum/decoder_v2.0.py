@@ -107,8 +107,8 @@ class MessagePassing(torch.nn.Module):
             out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
         
         if self.flow == 'source_to_target':
-#            out = out + extra[edge_index[j]]
-            out = torch.cat([out, extra[edge_index[j]]], dim=1)
+            out = out + extra[edge_index[j]]
+#            out = torch.cat([out, extra[edge_index[j]]], dim=1)
         else:
             out = torch.cat([out, extra[edge_index[j]]], dim=1)
 #        print(self.flow, extra[edge_index[j]])
@@ -153,7 +153,7 @@ class CustomDataset(InMemoryDataset):
 
 
 torch.autograd.set_detect_anomaly(True)
-L = 4
+L = 8
 #lambda_a = 0.5
 #P1 = [0.01,0.03,0.05, 0.07, 0.09, 0.11, 0.13]#, 0.15,0.17,0.19,0.20,0.21]
 P1 = [0.1]
@@ -199,17 +199,9 @@ class GraphConv(MessagePassing):
         self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
                        torch.nn.ReLU(),
                        torch.nn.Linear(10, 1).double())
-        self.mlp_p = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
+        self.mlp2 = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
                        torch.nn.ReLU(),
                        torch.nn.Linear(10, 1).double())
-        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(2, 10).double(),
-                       torch.nn.ReLU(),
-                       torch.nn.Linear(10, 1).double())
-        self.mlp2 = torch.nn.Sequential(torch.nn.Linear(2, 10).double(),
-                       torch.nn.ReLU(),
-                       torch.nn.Linear(10, 1).double())
-        self.rnn1 = torch.nn.GRUCell(1, 1, bias=bias).double()
-        self.rnn2 = torch.nn.GRUCell(1, 1, bias=bias).double()
         
     def forward(self, m, edge_index, x):
         '''
@@ -218,24 +210,18 @@ class GraphConv(MessagePassing):
         '''
         x = x if x.dim() == 2 else x.unsqueeze(-1)
         
-        if self.flow == 'target_to_source': m = self.mlp(m)
-        else: m = self.mlp_p(m)
-        
         mes = self.propagate(edge_index=edge_index, size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE), x=m, extra=x)
-        
-        if self.flow == 'target_to_source': mes = self.rnn2(mes, m)
-        else: mes = self.rnn1(mes, m)
         
         return mes
     
     def update(self, aggr_out):
         if self.flow == 'target_to_source':
-#            aggr_out[:, 0] = self.mlp(aggr_out[:, 0].clone().unsqueeze(1)).squeeze(1)
+            aggr_out[:, 0] = self.mlp(aggr_out[:, 0].clone().unsqueeze(1)).squeeze(1)
             
-#            return aggr_out[:, 0].clone().unsqueeze(1).mul(aggr_out[:, 1].clone().unsqueeze(1))
-            return self.mlp2(aggr_out)
+            return aggr_out[:, 0].clone().unsqueeze(1).mul(aggr_out[:, 1].clone().unsqueeze(1))
+#            return self.mlp2(aggr_out)
         else:
-            return self.mlp1(aggr_out)
+            return aggr_out
 #            return self.mlp(aggr_out[:, 0].clone().unsqueeze(1)) + self.mlp1(aggr_out[:, 1].clone().unsqueeze(1))
 #            return aggr_out
     
@@ -264,16 +250,10 @@ class GNNI(torch.nn.Module):
             m = self.ggc1(m, edge_index, x)
 #            m.register_hook(a_p)
             m = self.ggc2(m, edge_index, x)
-#        print('a', abs(x).max().item(), abs(x).min().item()
-        
+            
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
         res = scatter_('add', m, edge_index[0], dim_size=size[0])
         
-#        tmp = res[0 : rows].clone()
-#        
-#        for i in range(rows+cols, len(res), rows+cols):
-#            tmp = torch.cat([tmp, res[i : i+rows].clone()], dim=0)
-#        
         idx = torch.LongTensor([x for x in range(rows)]).cuda()
         
         for i in range(rows+cols, len(res), rows+cols):
@@ -292,7 +272,6 @@ class LossFunc(torch.nn.Module):
         super(LossFunc, self).__init__()
         
         self.a, self.b = max(H.size()), min(H.size())
-#        self.H_prep = Variable(H_prep).cuda()
         self.H_prep = H_prep.cuda()
         
     def forward(self, pred, datas):
