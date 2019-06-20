@@ -57,7 +57,7 @@ class MessagePassing(torch.nn.Module):
 
         i, j = (0, 1) if self.flow == 'target_to_source' else (1, 0)
         ij = {"_i": i, "_j": j}
-
+        
         message_args = []
         for arg in self.__message_args__:
             if arg[-2:] in ij.keys():
@@ -79,11 +79,11 @@ class MessagePassing(torch.nn.Module):
 #                    if size[idx] != tmp.size(0):
 #                        raise ValueError(__size_error_msg__)
 
-#                    tmp = torch.index_select(tmp, 0, edge_index[idx])
+#                    tmp = torch.index_select(tmp, 0, edge_index[idx]) # function of this step
                     message_args.append(tmp)
             else:
                 message_args.append(kwargs[arg])
-
+                
         size[0] = size[1] if size[0] is None else size[0]
         size[1] = size[0] if size[1] is None else size[1]
 
@@ -111,7 +111,7 @@ class MessagePassing(torch.nn.Module):
             out = torch.cat([out, extra[edge_index[j]]], dim=1)
         else:
             out = torch.cat([out, extra[edge_index[j]]], dim=1)
-        
+#        print(self.flow, extra[edge_index[j]])
         out = self.update(out, *update_args)
 
         return out
@@ -153,7 +153,7 @@ class CustomDataset(InMemoryDataset):
 
 
 torch.autograd.set_detect_anomaly(True)
-L = 8
+L = 4
 #lambda_a = 0.5
 #P1 = [0.01,0.03,0.05, 0.07, 0.09, 0.11, 0.13]#, 0.15,0.17,0.19,0.20,0.21]
 P1 = [0.1]
@@ -166,7 +166,7 @@ H_prep = torch.from_numpy(h_prep.get_H_Prep())
 #print(H_prep.size())
 BATCH_SIZE = 128
 lr = 3e-4
-Nc = 15
+Nc = 12
 run1 = 40960
 run2 = 8192
 dataset1 = error_generate.gen_syn(P1, L, H, run1)
@@ -267,14 +267,20 @@ class GNNI(torch.nn.Module):
 #        print('a', abs(x).max().item(), abs(x).min().item()
         
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
-        res = self.mlp(scatter_('add', m, edge_index[0], dim_size=size[0]))
+        res = scatter_('add', m, edge_index[0], dim_size=size[0])
         
-        tmp = res[0 : rows].clone()
+#        tmp = res[0 : rows].clone()
+#        
+#        for i in range(rows+cols, len(res), rows+cols):
+#            tmp = torch.cat([tmp, res[i : i+rows].clone()], dim=0)
+#        
+        idx = torch.LongTensor([x for x in range(rows)]).cuda()
         
         for i in range(rows+cols, len(res), rows+cols):
-            tmp = torch.cat([tmp, res[i : i+rows].clone()], dim=0)
+            idx = torch.cat([idx, torch.LongTensor([x for x in range(i, i+rows)]).cuda()], dim=0)
         
-#        res = self.mlp(tmp)
+        res = res[idx].clone()
+        res = self.mlp(res) + x[idx]
         
         res = torch.sigmoid(res)
         
@@ -342,7 +348,7 @@ def train(epoch):
         
 #        for p in decoder.parameters():
 #            print(p.grad.sum().item())
-        torch.nn.utils.clip_grad_norm_(decoder.parameters(), 0.65)
+#        torch.nn.utils.clip_grad_norm_(decoder.parameters(), 0.65)
         
         optimizer.step()
         
