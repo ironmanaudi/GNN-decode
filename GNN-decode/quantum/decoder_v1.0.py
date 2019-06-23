@@ -101,19 +101,18 @@ class MessagePassing(torch.nn.Module):
         out = self.message(*message_args)
         
         if self.flow == 'target_to_source':
-            out = torch.clamp(out, -10, 10)
+#            out = torch.clamp(out, -10, 10)
             out = torch.tanh(out / 2)
             Coeff = torch.where(out < 0, torch.ones(out.size(), dtype=torch.float64).cuda(), \
                                 torch.zeros(out.size(), dtype=torch.float64).cuda())
-            out = torch.clamp(out, 1e-7, 1e10)
+            out = torch.clamp(out, 1e-20, 1e10)
             out = torch.log(abs(out))
             out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
             Coeff = scatter_(self.aggr, Coeff, edge_index[j], dim_size=size[i])[edge_index[j]] - Coeff
-            out = torch.cos(math.pi * Coeff)
-            out = torch.exp(out).mul(out)
-            out = torch.clamp(out, -1+1e-7, 1-1e-7)
-    #        print(out.max().item())
-            out = torch.log(1 + out) - torch.log(1 - out)
+            Coeff = torch.cos(math.pi * Coeff)
+            out = torch.exp(out).mul(Coeff)
+#            out = torch.clamp(out, -1+1e-12, 1-1e-12)
+#            out = torch.log(1 + out) - torch.log(1 - out)
         else:
             out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
         
@@ -121,6 +120,7 @@ class MessagePassing(torch.nn.Module):
             out = out + extra[edge_index[j]]
         else:
             out = torch.cat([out, extra[edge_index[j]]], dim=1)
+#            out = torch.cat([out, Coeff], dim=1)
         
         out = self.update(out, *update_args)
 
@@ -163,16 +163,20 @@ class CustomDataset(InMemoryDataset):
 
 
 torch.autograd.set_detect_anomaly(True)
-L = 10
-P1 = [0.01, 0.02, 0.03, 0.04, 0.05, 0.06]
+L = 4
+#P1 = [0.03, 0.04, 0.05, 0.06, 0.07, 0.08]
+P1 = [0.01,0.03,0.05, 0.07, 0.09, 0.11, 0.13]#, 0.15,0.17,0.19,0.20,0.21]
+#P1 = [0.01]
+#P1 = [0.01,0.02,0.03,0.04,0.05,0.06, 0.07,0.08]
+#P1 = [0.01,0.04,0.07,0.1,0.13,0.16]
 P2 = [0.1]
 H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
 h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep())
 BATCH_SIZE = 512
 lr = 3e-4
-Nc = 25
-run1 = 15360
+Nc = 5
+run1 = 40960
 run2 = 2048
 dataset1 = error_generate.gen_syn(P1, L, H, run1)
 dataset2 = error_generate.gen_syn(P2, L, H, run2)
@@ -199,16 +203,20 @@ class GatedGraphConv(MessagePassing):
         super(GatedGraphConv, self).__init__(aggr, flow)
         
         self.flow = flow
+        self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
+                       torch.nn.ReLU(),
+                       torch.nn.Linear(10, 1).double())
+        self.mlp_p = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
+                       torch.nn.ReLU(),
+                       torch.nn.Linear(10, 1).double())
         self.mlp1 = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
                        torch.nn.ReLU(),
                        torch.nn.Linear(10, 1).double())
-        self.mlp2 = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
+        self.mlp2 = torch.nn.Sequential(torch.nn.Linear(2, 10).double(),
                        torch.nn.ReLU(),
                        torch.nn.Linear(10, 1).double())
-#        self.mlp3 = torch.nn.Sequential(torch.nn.Linear(1, 10),
-#                       torch.nn.ReLU(),
-#                       torch.nn.Linear(10, 1))
-        self.rnn = torch.nn.GRUCell(1, 1, bias=bias).double()
+#        self.rnn1 = torch.nn.GRUCell(1, 1, bias=bias).double()
+#        self.rnn2 = torch.nn.GRUCell(1, 1, bias=bias).double()
 
     def forward(self, m, edge_index, x):
         '''
@@ -217,18 +225,23 @@ class GatedGraphConv(MessagePassing):
         '''
         x = x if x.dim() == 2 else x.unsqueeze(-1)
         
+        if self.flow == 'target_to_source': m = self.mlp(m)
+        else: m = self.mlp_p(m)
+        
         mes = self.propagate(edge_index=edge_index, size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE), x=m, extra=x)
-#        m = self.rnn(m, mes)
+        
+#        if self.flow == 'target_to_source': mes = self.rnn2(mes, m)
+#        else: mes = self.rnn1(mes, m)
         
         return mes
     
     def update(self, aggr_out):
         if self.flow == 'target_to_source':
-            return self.mlp2(aggr_out[:, 0].clone().unsqueeze(1)).mul(aggr_out[:, 1].clone().unsqueeze(1))
+#            return self.mlp2(aggr_out[:, 0].clone().unsqueeze(1)).mul(aggr_out[:, 1].clone().unsqueeze(1))
 #            return aggr_out[:, 0].clone().unsqueeze(1).mul(aggr_out[:, 1].clone().unsqueeze(1))
-#            return self.mlp2(aggr_out)
+            return self.mlp2(aggr_out)
         else:
-            return aggr_out
+            return self.mlp1(aggr_out)
     
 class GNNI(torch.nn.Module):
     def __init__(self, Nc):
@@ -252,8 +265,8 @@ class GNNI(torch.nn.Module):
         for i in range(self.Nc):
             m_p = m.clone()
             m = self.ggc1(m, edge_index, x)
-            m = self.ggc2(m, edge_index, x) + m_p
-        
+            m = self.ggc2(m, edge_index, x)
+            
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
         res = scatter_('add', m, edge_index[0], dim_size=size[0])
         
@@ -261,10 +274,12 @@ class GNNI(torch.nn.Module):
         
         for i in range(rows+cols, len(res), rows+cols):
             idx = torch.cat([idx, torch.LongTensor([x for x in range(i, i+rows)]).cuda()], dim=0)
-            
+        
         res = res[idx].clone()
+#        print(res.size(), x[idx].size())
+#        print(torch.cat([res, x[idx]], dim=0).size())
         res = self.mlp(torch.cat([res, x[idx]], dim=1))
-        res = torch.sigmoid(-1 * res)
+#        res = torch.sigmoid(-1 * res)
         
         return res
 
@@ -297,7 +312,7 @@ class LossFunc(torch.nn.Module):
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 decoder = GNNI(Nc).to(device)
-optimizer = torch.optim.Adam(decoder.parameters(), lr, weight_decay=5e-4)
+optimizer = torch.optim.Adam(decoder.parameters(), lr, weight_decay=1e-9)
 #optimizer = torch.optim.RMSprop(decoder.parameters(), lr, alpha=0.9)
 criterion = LossFunc(H, H_prep)
 
@@ -319,7 +334,7 @@ def train(epoch):
         
     if epoch % 6 == 0:
         f.write(' %.15f ' % (loss.item()))
-        torch.save(decoder.state_dict(), './model/decoder_parameters_epoch%d.pkl' % (epoch))
+        torch.save(decoder.state_dict(), './model1/decoder_parameters_epoch%d.pkl' % (epoch))
         
     f.close()
     
