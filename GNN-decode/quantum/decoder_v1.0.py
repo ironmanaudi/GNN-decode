@@ -103,12 +103,14 @@ class MessagePassing(torch.nn.Module):
         if self.flow == 'target_to_source':
             out = torch.clamp(out, -10, 10)
             out = torch.tanh(out / 2)
-            Coeff = torch.where(out < 0, torch.ones(out.size()).cuda(), torch.zeros(out.size()).cuda())
+            Coeff = torch.where(out < 0, torch.ones(out.size(), dtype=torch.float64).cuda(), \
+                                torch.zeros(out.size(), dtype=torch.float64).cuda())
             out = torch.clamp(out, 1e-7, 1e10)
             out = torch.log(abs(out))
             out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
             Coeff = scatter_(self.aggr, Coeff, edge_index[j], dim_size=size[i])[edge_index[j]] - Coeff
-            out = torch.exp(out).mul(torch.cos(math.pi * Coeff))
+            out = torch.cos(math.pi * Coeff)
+            out = torch.exp(out).mul(out)
             out = torch.clamp(out, -1+1e-7, 1-1e-7)
     #        print(out.max().item())
             out = torch.log(1 + out) - torch.log(1 - out)
@@ -164,9 +166,9 @@ torch.autograd.set_detect_anomaly(True)
 L = 10
 P1 = [0.01, 0.02, 0.03, 0.04, 0.05, 0.06]
 P2 = [0.1]
-H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).float().t() #64, 30
+H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
 h_prep = error_generate.H_Prep(H.t())
-H_prep = torch.from_numpy(h_prep.get_H_Prep()).float()
+H_prep = torch.from_numpy(h_prep.get_H_Prep())
 BATCH_SIZE = 512
 lr = 3e-4
 Nc = 25
@@ -197,16 +199,16 @@ class GatedGraphConv(MessagePassing):
         super(GatedGraphConv, self).__init__(aggr, flow)
         
         self.flow = flow
-        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(1, 10),
+        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
                        torch.nn.ReLU(),
-                       torch.nn.Linear(10, 1))
-        self.mlp2 = torch.nn.Sequential(torch.nn.Linear(1, 10),
+                       torch.nn.Linear(10, 1).double())
+        self.mlp2 = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
                        torch.nn.ReLU(),
-                       torch.nn.Linear(10, 1))
+                       torch.nn.Linear(10, 1).double())
 #        self.mlp3 = torch.nn.Sequential(torch.nn.Linear(1, 10),
 #                       torch.nn.ReLU(),
 #                       torch.nn.Linear(10, 1))
-        self.rnn = torch.nn.GRUCell(1, 1, bias=bias)
+        self.rnn = torch.nn.GRUCell(1, 1, bias=bias).double()
 
     def forward(self, m, edge_index, x):
         '''
@@ -235,13 +237,9 @@ class GNNI(torch.nn.Module):
         self.Nc = Nc
         self.ggc1 = GatedGraphConv("source_to_target")
         self.ggc2 = GatedGraphConv("target_to_source")
-        self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 10),
+        self.mlp = torch.nn.Sequential(torch.nn.Linear(2, 10).double(),
                        torch.nn.ReLU(),
-                       torch.nn.Linear(10, 10),
-                       torch.nn.ReLU(),
-                       torch.nn.Linear(10, 10),
-                       torch.nn.ReLU(),
-                       torch.nn.Linear(10, 1))
+                       torch.nn.Linear(10, 1).double())
     
     def forward(self, data):
         '''
@@ -249,25 +247,23 @@ class GNNI(torch.nn.Module):
         '''
         x = data.x
         edge_index = torch.cat([data.edge_index[0].unsqueeze(0), data.edge_index[1].unsqueeze(0).add(rows)], dim=0)
-        m = Variable(torch.zeros((edge_index.size()[1], 1)), requires_grad=False).cuda()
+        m = Variable(torch.zeros((edge_index.size()[1], 1), dtype = torch.float64), requires_grad=False).cuda()
         
         for i in range(self.Nc):
             m_p = m.clone()
             m = self.ggc1(m, edge_index, x)
-#            m.register_hook(a_p)
             m = self.ggc2(m, edge_index, x) + m_p
-#        print('a', abs(x).max().item(), abs(x).min().item()
         
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
         res = scatter_('add', m, edge_index[0], dim_size=size[0])
         
-        tmp = res[0 : rows].clone()
+        idx = torch.LongTensor([x for x in range(rows)]).cuda()
         
         for i in range(rows+cols, len(res), rows+cols):
-            tmp = torch.cat([tmp, res[i : i+rows].clone()], dim=0)
-        
-        res = self.mlp(tmp)
-        
+            idx = torch.cat([idx, torch.LongTensor([x for x in range(i, i+rows)]).cuda()], dim=0)
+            
+        res = res[idx].clone()
+        res = self.mlp(torch.cat([res, x[idx]], dim=1))
         res = torch.sigmoid(-1 * res)
         
         return res
@@ -293,7 +289,7 @@ class LossFunc(torch.nn.Module):
 #        deg = torch.where(deg==0, deg, torch.ones(deg.size()).cuda()).sum() / torch.numel(deg)
 #        print(deg.item())
         
-        loss_p = torch.matmul(self.H_prep, res + tmp)
+        loss_p = torch.matmul(H.t().cuda(), res + tmp)
         loss = abs(torch.sin(loss_p * math.pi / 2)).sum()
         
         return loss
@@ -343,8 +339,8 @@ def test(decoder_a):
 
 
 if __name__ == '__main__':
-    training = 0
-    load = 1
+    training = 1
+    load = 0
     if training:
         for epoch in range(1, 481):
             train(epoch)
