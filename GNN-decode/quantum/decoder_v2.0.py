@@ -14,10 +14,43 @@ from torch.nn import Parameter as Param
 #from torch_geometric.nn.conv import MessagePassing
 import inspect
 from torch.nn import Parameter
-from torch_geometric.utils import scatter_
+#from torch_geometric.utils import scatter_
 import torch.nn.functional as F
 from torch_geometric.data import DataLoader
 import error_generate
+import torch_scatter
+from torch_scatter import scatter_add
+
+
+def scatter_mean(src, index, dim=-1, out=None, dim_size=None, fill_value=0):
+    out = scatter_add(src, index, dim, out, dim_size, fill_value)[index] - src
+    
+    count = scatter_add(torch.ones_like(src), index, dim, None, out.size(dim))[index] - 1
+    return out / count.clamp(min=1)
+
+
+'''
+PDP version of decoder
+'''
+
+def scatter_(name, src, index, dim_size=None):
+    assert name in ['add', 'mean', 'max']
+
+    op = getattr(torch_scatter, 'scatter_{}'.format(name))
+    fill_value = -1e9 if name == 'max' else 0
+    
+    if name == 'mean':
+        out = scatter_mean(src, index, 0, None, dim_size, fill_value)
+    else:    
+        out = op(src, index, 0, None, dim_size, fill_value)
+#    print(out.size(), src.size())
+    if isinstance(out, tuple):
+        out = out[0]
+
+    if name == 'max':
+        out[out == fill_value] = 0
+
+    return out
 
 
 torch.autograd.set_detect_anomaly(True)
@@ -153,20 +186,20 @@ class CustomDataset(InMemoryDataset):
 
 
 torch.autograd.set_detect_anomaly(True)
-L = 8
+L = 4
 #lambda_a = 0.5
 #P1 = [0.01,0.03,0.05, 0.07, 0.09, 0.11, 0.13]#, 0.15,0.17,0.19,0.20,0.21]
-P1 = [0.1]
-#P1 = [0.01,0.02,0.03,0.04,0.05,0.06, 0.07,0.08]
+#P1 = [0.1]
+P1 = [0.01,0.02,0.03,0.04,0.05,0.06, 0.07,0.08]
 #P1 = [0.01,0.04,0.07,0.1,0.13,0.16]
-P2 = [0.1]
+P2 = [0.01]
 H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
 h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep())
 #print(H_prep.size())
-BATCH_SIZE = 128
+BATCH_SIZE = 512
 lr = 3e-4
-Nc = 12
+Nc = 25
 run1 = 40960
 run2 = 8192
 dataset1 = error_generate.gen_syn(P1, L, H, run1)
@@ -248,11 +281,10 @@ class GNNI(torch.nn.Module):
         for i in range(self.Nc):
             m_p = m.clone()
             m = self.ggc1(m, edge_index, x)
-#            m.register_hook(a_p)
-            m = self.ggc2(m, edge_index, x)
+            m = self.ggc2(m, edge_index, x) + m_p
             
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
-        res = scatter_('add', m, edge_index[0], dim_size=size[0])
+        res = scatter_('add', m, edge_index[0], dim_size=size[0]) + x
         
         idx = torch.LongTensor([x for x in range(rows)]).cuda()
         
@@ -260,8 +292,9 @@ class GNNI(torch.nn.Module):
             idx = torch.cat([idx, torch.LongTensor([x for x in range(i, i+rows)]).cuda()], dim=0)
         
         res = res[idx].clone()
-        res = self.mlp(res) + x[idx]
-        
+#        res = self.mlp(torch.cat([res, x[idx]], dim=1))
+#        res = res + x[idx]
+        res = self.mlp(res)
         res = torch.sigmoid(res)
         
         return res
@@ -277,32 +310,17 @@ class LossFunc(torch.nn.Module):
     def forward(self, pred, datas):
         tmp = datas.y[0 : self.a].clone()
         res = pred[0 : self.a].clone()
-        syn = datas.x[self.a : self.a+self.b]
+#        syn = datas.x[self.a : self.a+self.b]
         
         for i in range(self.a, len(datas.y), self.a):
 #            tmp = torch.cat([tmp, datas.y[i : i+self.a].clone()], dim=1)
             res = torch.cat([res, pred[i : i+self.a].clone()], dim=1)
               
-        for i in range(self.a+self.b, len(datas.x), self.a+self.b):
-            syn = torch.cat([syn, datas.x[i+self.a : i+self.a+self.b].clone()], dim=1)
-
-#        deg = ((torch.where(res>0.5, torch.ones(res.size()).cuda(), torch.zeros(res.size()).cuda()) + tmp) % 2)
-#        deg = torch.where(deg==0, deg, torch.ones(deg.size()).cuda()).sum() / torch.numel(deg)
-#        print(deg.item())
-#        print('a',(res + tmp).sum().item())
-        
-#        pred_p = torch.where(res > 0.5, torch.ones(res.size(), dtype=torch.float64).cuda(),\
-#                             torch.zeros(res.size(), dtype=torch.float64).cuda()).cuda()
-#        err = (pred_p + tmp) % 2
-#        print('a', tmp.sum().item()/tmp.numel(), err.sum().item()/tmp.numel())
-        loss_p = torch.matmul(H.t().cuda(), tmp + res)
+#        for i in range(self.a+self.b, len(datas.x), self.a+self.b):
+#            syn = torch.cat([syn, datas.x[i+self.a : i+self.a+self.b].clone()], dim=1)
+            
+        loss_p = torch.matmul(self.H_prep, tmp + res)
         loss = abs(torch.sin(loss_p * math.pi / 2)).sum()
-#        loss_a = torch.matmul(H.t().cuda(), res) + syn
-#        loss_b = torch.matmul(logical, tmp + res)
-#        loss = abs(torch.sin(loss_a * math.pi / 2)).sum() + abs(torch.sin(loss_b * math.pi / 2)).sum()
-#        log_loss = torch.matmul(logical, tmp)
-#        log_loss = abs(torch.sin(log_loss * math.pi / 2)).sum()
-#        print('b',loss_p.sum().item(), torch.matmul(self.H_prep, err).sum().item())
         
         return loss
     
@@ -310,7 +328,7 @@ class LossFunc(torch.nn.Module):
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 decoder = GNNI(Nc).to(device)
 #decoder.load_state_dict(torch.load('./model1/decoder_parameters_epoch6.pkl'))
-optimizer = torch.optim.Adam(decoder.parameters(), lr, weight_decay=5e-4)
+optimizer = torch.optim.Adam(decoder.parameters(), lr, weight_decay=1e-9)
 #optimizer = torch.optim.RMSprop(decoder.parameters(), lr, alpha=0.9)
 criterion = LossFunc(H, H_prep)
 
@@ -327,7 +345,7 @@ def train(epoch):
         
 #        for p in decoder.parameters():
 #            print(p.grad.sum().item())
-#        torch.nn.utils.clip_grad_norm_(decoder.parameters(), 0.65)
+        torch.nn.utils.clip_grad_norm_(decoder.parameters(), 0.65)
         
         optimizer.step()
         
@@ -377,7 +395,7 @@ if __name__ == '__main__':
     if load:
         f = open('./test_loss_for_trained_model.txt','a')
         decoder_b = GNNI(Nc).to(device)
-        decoder_b.load_state_dict(torch.load('./model/decoder_parameters_epoch132.pkl'))
+        decoder_b.load_state_dict(torch.load('./model2/decoder_parameters_epoch6.pkl'))
         
         loss = test(decoder_b)
         print(loss)
