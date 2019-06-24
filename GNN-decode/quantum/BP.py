@@ -161,12 +161,12 @@ class CustomDataset(InMemoryDataset):
 
 torch.autograd.set_detect_anomaly(True)
 L = 10
-P2 = [0.1]
+P2 = [0.01]
 H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
 h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep())
 BATCH_SIZE = 512
-Nc = 10
+Nc = 25
 run2 = 4096
 dataset2 = error_generate.gen_syn(P2, L, H, run2)
 test_dataset = CustomDataset(H, dataset2)
