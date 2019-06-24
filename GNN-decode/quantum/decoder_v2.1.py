@@ -243,33 +243,24 @@ class GraphConv(MessagePassing):
         self.rnn1 = torch.nn.GRUCell(1, 1, bias=bias).double()
         self.rnn2 = torch.nn.GRUCell(1, 1, bias=bias).double()
         
-    def forward(self, m, edge_index, x):
-        '''
-        GGC behaviour need to be modified to fellow BP decoding, which will have 2 phases of iteration; also note that phase2 use 
-        the proir knoledge to update rather than the last hidden state of x
-        '''
+    def forward(self, m, edge_index, x, prev=None):
         x = x if x.dim() == 2 else x.unsqueeze(-1)
         
-#        if self.flow == 'target_to_source': m = self.mlp(m)
-#        else: m = self.mlp_p(m)
+        if self.flow == 'target_to_source': m = self.mlp(m)
+        else: m = self.mlp_p(m)
         
         mes = self.propagate(edge_index=edge_index, size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE), x=m, extra=x)
         
-        if self.flow == 'target_to_source': mes = self.rnn2(mes, m)
-        else: mes = self.rnn1(mes, m)
+        if prev is not None and self.flow == 'target_to_source':mes = self.rnn2(mes, prev)
+        elif prev is not None and self.flow == 'source_to_target':mes = self.rnn1(mes, prev)
         
         return mes
     
     def update(self, aggr_out):
         if self.flow == 'target_to_source':
-#            aggr_out[:, 0] = self.mlp(aggr_out[:, 0].clone().unsqueeze(1)).squeeze(1)
-            
-#            return aggr_out[:, 0].clone().unsqueeze(1).mul(aggr_out[:, 1].clone().unsqueeze(1))
             return self.mlp2(aggr_out)
         else:
             return self.mlp1(aggr_out)
-#            return self.mlp(aggr_out[:, 0].clone().unsqueeze(1)) + self.mlp1(aggr_out[:, 1].clone().unsqueeze(1))
-#            return aggr_out
     
     
 class GNNI(torch.nn.Module):
@@ -282,9 +273,9 @@ class GNNI(torch.nn.Module):
         self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
                        torch.nn.ReLU(),
                        torch.nn.Linear(10, 1).double())
-        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
-                       torch.nn.ReLU(),
-                       torch.nn.Linear(10, 1).double())
+#        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
+#                       torch.nn.ReLU(),
+#                       torch.nn.Linear(10, 1).double())
     
     def forward(self, data):
         '''
@@ -293,13 +284,17 @@ class GNNI(torch.nn.Module):
         x = data.x
         edge_index = torch.cat([data.edge_index[0].clone().unsqueeze(0), data.edge_index[1].clone().unsqueeze(0).add(rows)], dim=0)
         m = Variable(torch.zeros((edge_index.size()[1], 1), dtype = torch.float64), requires_grad=False).cuda()
-        m = self.mlp1(m)
+#        m = self.mlp1(m)
+        
+        m = self.ggc1(m, edge_index, x)
+        prev_a = m.clone()
+        m = self.ggc2(m, edge_index, x)
+        prev_b = m.clone()
         
         for i in range(self.Nc):
-            m_p = m.clone()
-            m = self.ggc1(m, edge_index, x)
-#            m.register_hook(a_p)
-            m = self.ggc2(m, edge_index, x)
+#            m_p = m.clone()
+            m = self.ggc1(m, edge_index, x, prev_a)
+            m = self.ggc2(m, edge_index, x, prev_b)
             
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
         res = scatter_('add', m, edge_index[0], dim_size=size[0])
