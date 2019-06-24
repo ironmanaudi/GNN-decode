@@ -109,6 +109,7 @@ class MessagePassing(torch.nn.Module):
             out = torch.clamp(out, 1e-20, 1e10)
             out = torch.log(out)
             out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
+            
             Coeff = scatter_(self.aggr, Coeff, edge_index[j], dim_size=size[i])[edge_index[j]] - Coeff
             Coeff = torch.cos(math.pi * (Coeff + (1 - extra[edge_index[j]]) / 2))
             out = torch.exp(out).mul(Coeff)
@@ -129,7 +130,7 @@ class MessagePassing(torch.nn.Module):
 
 
     def update(self, aggr_out):  # pragma: no cover
-
+        
         return aggr_out
 
 
@@ -159,13 +160,12 @@ class CustomDataset(InMemoryDataset):
 
 
 torch.autograd.set_detect_anomaly(True)
-L = 4
-P2 = [0.01]
+L = 10
+P2 = [0.1]
 H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
 h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep())
 BATCH_SIZE = 512
-lr = 3e-4
 Nc = 10
 run2 = 4096
 dataset2 = error_generate.gen_syn(P2, L, H, run2)
@@ -214,6 +214,7 @@ class GNNI(torch.nn.Module):
             idx = torch.cat([idx, torch.LongTensor([x for x in range(i, i+rows)]).cuda()], dim=0)
         
         res = res[idx].clone() + x[idx]
+        res = torch.sigmoid(-1 * res)
         
         return res
 
@@ -233,7 +234,7 @@ class LossFunc(torch.nn.Module):
             tmp = torch.cat([tmp, y[i : i+self.a].clone()], dim=1)
             res = torch.cat([res, pred[i : i+self.a].clone()], dim=1)
             
-#        loss_p = torch.matmul(H.t().cuda(), res + tmp)
+#        loss_p = torch.matmul(H.t().cuda(), res + tmp)     
         loss_p = torch.matmul(logical, res + tmp)
         loss = abs(torch.sin(loss_p * math.pi / 2)).sum()
         
