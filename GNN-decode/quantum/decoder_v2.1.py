@@ -22,7 +22,7 @@ import torch_scatter
 from torch_scatter import scatter_add
 
 '''
-PDP version of decoder
+PDP version of decoder with explicit structure-awareness
 '''
 
 def scatter_mean(src, index, dim=-1, out=None, dim_size=None, fill_value=0):
@@ -139,19 +139,18 @@ class MessagePassing(torch.nn.Module):
             out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
         
         if self.flow == 'source_to_target':
-#            out = out + extra[edge_index[j]]
-            out = torch.cat([out, extra[edge_index[j]]], dim=1)
+            out = out + extra[edge_index[j]]
         else:
             out = torch.cat([out, extra[edge_index[j]]], dim=1)
-#        print(self.flow, extra[edge_index[j]])
+            
         out = self.update(out, *update_args)
 
         return out
 
 
-    def message(self, x_j):  # pragma: no cover
+    def message(self, x):  # pragma: no cover
         
-        return x_j
+        return x
 
 
     def update(self, aggr_out):  # pragma: no cover
@@ -186,17 +185,14 @@ class CustomDataset(InMemoryDataset):
 
 torch.autograd.set_detect_anomaly(True)
 L = 4
-#P1 = [0.01,0.03,0.05, 0.07, 0.09, 0.11, 0.13]#, 0.15,0.17,0.19,0.20,0.21]
-#P1 = [0.1]
-P1 = [0.01,0.02,0.03,0.04,0.05,0.06, 0.07,0.08]
-#P1 = [0.01,0.04,0.07,0.1,0.13,0.16]
+P1 = [0.01,0.02,0.03,0.04,0.05,0.06, 0.07,0.08,0.09,0.1]
 P2 = [0.01]
 H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
 h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep())
 BATCH_SIZE = 128
 lr = 1e-4
-Nc = 25
+Nc = 10
 run1 = 40960
 run2 = 8192
 dataset1 = error_generate.gen_syn(P1, L, H, run1)
@@ -268,9 +264,9 @@ class GraphConv(MessagePassing):
     
     def message(self, x, edge_index):
         if self.flow == 'target_to_source':
-            return x.mul(self.mlp2(edge_index.double().t()))
+            return x.mul(self.mlp2(edge_index.double().t() / edge_index.max()))
         else:
-            return x.mul(self.mlp1(edge_index[0:2, :].double().t()))
+            return x.mul(self.mlp1(edge_index[0:2, :].double().t() / edge_index.max()))
             
     def update(self, aggr_out):
         if self.flow == 'target_to_source':
@@ -288,7 +284,11 @@ class GNNI(torch.nn.Module):
         self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 128).double(),
                        torch.nn.Softplus(),
                        torch.nn.Linear(128, 1).double())
+        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(2, 128).double(),
+                       torch.nn.Softplus(),
+                       torch.nn.Linear(128, 1).double())
         self.mlp.apply(init_weights)
+        self.mlp1.apply(init_weights)
     
     def forward(self, data):
         '''
@@ -309,6 +309,7 @@ class GNNI(torch.nn.Module):
             m = self.ggc2(m, edge_index, x, prev_b) + m_p
             
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
+        m = self.mlp(m).mul(self.mlp1(edge_index[0:2, :].double().t() / edge_index.max()))
         res = scatter_('add', m, edge_index[0], dim_size=size[0])
         
         idx = torch.LongTensor([x for x in range(rows)]).cuda()
