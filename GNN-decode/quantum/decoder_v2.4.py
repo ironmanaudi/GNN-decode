@@ -152,7 +152,7 @@ class CustomDataset(InMemoryDataset):
 
 
 torch.autograd.set_detect_anomaly(True)
-L = 10
+L = 4
 P1 = [0.01,0.02,0.03,0.04,0.05,0.06, 0.07,0.08,0.09,0.1]
 P2 = [0.01]
 H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
@@ -160,7 +160,7 @@ h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep())
 BATCH_SIZE = 128
 lr = 3e-4
-Nc = 10
+Nc = 5
 run1 = 40960
 run2 = 8192
 dataset1 = error_generate.gen_syn(P1, L, H, run1)
@@ -177,20 +177,21 @@ logical, stab = logical.cuda(), stab.cuda()
 def init_weights(m, val=0.0884):
     if type(m) == torch.nn.Linear:
 #        torch.nn.init.xavier_uniform_(m.weight)
-#        torch.nn.init.constant_(m.weight, val)
+#        torch.nn.init.constant_(m.weight, 0.1574)
+#        torch.nn.init.uniform_(m.weight, a=0.0884, b=0.1)
+        torch.nn.init.uniform_(m.weight, a=0.1574, b=0.3)
+        m.bias.data.fill_(1e-2)
+        
+        
+def init_weights_2(m):
+    if type(m) == torch.nn.Linear:
         torch.nn.init.uniform_(m.weight, a=0.0884, b=0.1)
-#        torch.nn.init.uniform_(m.weight, a=0, b=1)
-        m.bias.data.fill_(1e-3)
+        m.bias.data.fill_(1e-2)
 
 
 def a_p(grad):
     a = torch.where(abs(grad) < 1e-1, torch.ones(grad.size()).cuda(), torch.zeros(grad.size()).cuda())
-#    print(a.sum().item() / grad.numel())
     print(abs(grad).min().item(), abs(grad).max().item(), a.sum().item() / grad.numel())
-#    f = open('./grad.txt','w')
-#    for i in grad
-#        f.write('%f, '%i.item())
-#    f.close()
     
 
 class GraphConv(MessagePassing):
@@ -198,9 +199,11 @@ class GraphConv(MessagePassing):
         super(GraphConv, self).__init__(aggr, flow)
         
         self.flow = flow
-        self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 128).double(),
+        self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 16).double(),
                        torch.nn.Softplus(),
-                       torch.nn.Linear(128, 1).double())
+                       torch.nn.Linear(16, 16).double(),
+                       torch.nn.Softplus(),
+                       torch.nn.Linear(16, 1).double())
         self.mlp.apply(init_weights)
 
     def forward(self, m, edge_index, x):
@@ -235,7 +238,7 @@ class GNNI(torch.nn.Module):
         self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 128).double(),
                        torch.nn.Softplus(),
                        torch.nn.Linear(128, 1).double())
-        self.mlp.apply(init_weights)
+        self.mlp.apply(init_weights_2)
     
     def forward(self, data):
         '''
@@ -279,8 +282,8 @@ class LossFunc(torch.nn.Module):
             tmp = torch.cat([tmp, datas.y[i : i+self.a].clone()], dim=1)
             res = torch.cat([res, pred[i : i+self.a].clone()], dim=1)
 
-#        loss_a = torch.matmul(self.H_prep, res + tmp)
-        loss_a = torch.matmul(logical, tmp + res)
+        loss_a = torch.matmul(self.H_prep, res + tmp)
+#        loss_a = torch.matmul(logical, tmp + res)
         loss = abs(torch.sin(loss_a * math.pi / 2))
         return loss.sum()
     
@@ -325,12 +328,12 @@ def test(decoder_a):
         
         loss += criterion(pred, datas).item()
         
-#    return loss / (run2 * 2 * L ** 2)
-    return loss / run2
+    return loss / (run2 * 2 * L ** 2)
+#    return loss / run2
 
 
 if __name__ == '__main__':
-    training = 0
+    training = 1
     load = 1 - training
     if training:
         for epoch in range(1, 481):
