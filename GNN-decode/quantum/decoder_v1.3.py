@@ -162,9 +162,9 @@ P2 = [0.01]
 H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
 h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep())
-BATCH_SIZE = 64
+BATCH_SIZE = 128
 lr = 3e-4
-Nc = 25
+Nc = 8
 run1 = 40960
 run2 = 8192
 dataset1 = error_generate.gen_syn(P1, L, H, run1)
@@ -178,14 +178,18 @@ logical, stab = h_prep.get_logical(H_prep)
 logical, stab = logical.cuda(), stab.cuda()
 
 
-def init_weights(m, val=0.0884):
+def init_weights(m):
     if type(m) == torch.nn.Linear:
-#        torch.nn.init.xavier_uniform_(m.weight)
-#        torch.nn.init.constant_(m.weight, val)
-        torch.nn.init.uniform_(m.weight, a=0.0884, b=0.1)
-#        torch.nn.init.uniform_(m.weight, a=0, b=1)
+        torch.nn.init.uniform_(m.weight, a=0, b=0.11)
         m.bias.data.fill_(1e-3)
 
+
+def init_weights_2(m):
+    if type(m) == torch.nn.Linear:
+        torch.nn.init.uniform_(m.weight, a=0.0884, b=0.1)
+#        torch.nn.init.uniform_(m.weight, a=4.43, b=0.5)
+        m.bias.data.fill_(0.1)
+        
 
 def a_p(grad):
     a = torch.where(abs(grad) < 1e-1, torch.ones(grad.size()).cuda(), torch.zeros(grad.size()).cuda())
@@ -197,14 +201,23 @@ class GraphConv(MessagePassing):
         super(GraphConv, self).__init__(aggr, flow)
         
         self.flow = flow
-        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(2, 128).double(),
+        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(2, 16).double(),
                        torch.nn.Softplus(),
-                       torch.nn.Linear(128, 1).double())
-        self.mlp2 = torch.nn.Sequential(torch.nn.Linear(2, 128).double(),
+                       torch.nn.Linear(16, 16).double(),
                        torch.nn.Softplus(),
-                       torch.nn.Linear(128, 1).double())
+                       torch.nn.Linear(16, 1).double())
         self.mlp1.apply(init_weights)
-        self.mlp2.apply(init_weights)
+        
+        if self.flow == 'target_to_source':
+#            self.mlp2 = torch.nn.Sequential(torch.nn.Linear(1, 16).double(),
+#                           torch.nn.Softplus(),
+#                           torch.nn.Linear(16, 16).double(),
+#                           torch.nn.Softplus(),
+#                           torch.nn.Linear(16, 1).double())
+            self.mlp2 = torch.nn.Sequential(torch.nn.Linear(1, 128).double(),
+                       torch.nn.Softplus(),
+                       torch.nn.Linear(128, 1).double())
+            self.mlp2.apply(init_weights_2)
         
     def forward(self, m, edge_index, x):
         x = x if x.dim() == 2 else x.unsqueeze(-1)
@@ -215,13 +228,13 @@ class GraphConv(MessagePassing):
     
     def message(self, x, edge_index):
         if self.flow == 'target_to_source':
-            return x.mul(self.mlp2(edge_index.double().t() / edge_index.max()))
+            return x.mul(self.mlp1(edge_index.double().t() / edge_index.max()))
         else:
             return x.mul(self.mlp1(edge_index[0:2, :].double().t() / edge_index.max()))
             
     def update(self, aggr_out):
         if self.flow == 'target_to_source':
-            return aggr_out[:, 0].clone().unsqueeze(1).mul(aggr_out[:, 1].clone().unsqueeze(1))
+            return self.mlp2(aggr_out[:, 0].clone().unsqueeze(1)).mul(aggr_out[:, 1].clone().unsqueeze(1))
         else:
             return aggr_out
     
@@ -236,10 +249,13 @@ class GNNI(torch.nn.Module):
         self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 128).double(),
                        torch.nn.Softplus(),
                        torch.nn.Linear(128, 1).double())
-        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(2, 128).double(),
+        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(2, 16).double(),
                        torch.nn.Softplus(),
-                       torch.nn.Linear(128, 1).double())
-        self.mlp.apply(init_weights)
+                       torch.nn.Linear(16, 16).double(),
+                       torch.nn.Softplus(),
+                       torch.nn.Linear(16, 1).double())
+        self.mlp.apply(init_weights_2)
+        self.mlp1.apply(init_weights)
     
     def forward(self, data):
         '''
