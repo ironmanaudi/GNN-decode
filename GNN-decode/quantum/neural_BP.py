@@ -104,15 +104,26 @@ class MessagePassing(torch.nn.Module):
         out = self.message(*message_args)
         
         if self.flow == 'target_to_source':
+            out = torch.clamp(out, -10, 10)
             out = torch.tanh(out / 2)
+            Coeff = torch.where(out < 0, torch.ones(out.size(), dtype=torch.float64).cuda(), \
+                                torch.zeros(out.size(), dtype=torch.float64).cuda())
+            out = abs(out)
+            out = torch.clamp(out, 1e-20, 1e10)
+            out = torch.log(out)
             out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
+            
+            Coeff = scatter_(self.aggr, Coeff, edge_index[j], dim_size=size[i])[edge_index[j]] - Coeff
+            Coeff = torch.cos(math.pi * (Coeff + (1 - extra[edge_index[j]]) / 2))
+            out = torch.exp(out).mul(Coeff)
+            out = torch.clamp(out, -1+1e-12, 1-1e-12)
+            out = torch.log(1 + out) - torch.log(1 - out)
         else:
             out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
         
         if self.flow == 'source_to_target':
             out = out + extra[edge_index[j]]
         else:
-#            print(edge_index[0:1, :].size())
             out = torch.cat([out, extra[edge_index[j]]], dim=1)
             
         out = self.update(out, *update_args)
@@ -157,17 +168,14 @@ class CustomDataset(InMemoryDataset):
 
 torch.autograd.set_detect_anomaly(True)
 L = 4
-#P1 = [0.01,0.03,0.05, 0.07, 0.09, 0.11, 0.13]#, 0.15,0.17,0.19,0.20,0.21]
-#P1 = [0.1]
 P1 = [0.01,0.02,0.03,0.04,0.05,0.06, 0.07,0.08, 0.09, 0.1]
-#P1 = [0.01,0.04,0.07,0.1,0.13,0.16]
 P2 = [0.01]
 H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
 h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep())
-BATCH_SIZE = 128
+BATCH_SIZE = 64
 lr = 3e-4
-Nc = 25
+Nc = 8
 run1 = 40960
 run2 = 8192
 dataset1 = error_generate.gen_syn(P1, L, H, run1)
@@ -181,16 +189,14 @@ logical, stab = h_prep.get_logical(H_prep)
 logical, stab = logical.cuda(), stab.cuda()
 
 
-def init_weights(m, val=1/16):
+def init_weights(m):
     if type(m) == torch.nn.Linear:
-        torch.nn.init.xavier_uniform_(m.weight)
-#        torch.nn.init.constant_(m.weight, val)
-        m.bias.data.fill_(1e-4)
+        torch.nn.init.uniform_(m.weight, a=0, b=0.11)
+        m.bias.data.fill_(1e-3)
 
 
 def a_p(grad):
     a = torch.where(abs(grad) < 1e-1, torch.ones(grad.size()).cuda(), torch.zeros(grad.size()).cuda())
-#    print(a.sum().item() / grad.numel())
     print(abs(grad).min().item(), abs(grad).max().item(), a.sum().item() / grad.numel())
     
 
@@ -199,14 +205,12 @@ class GraphConv(MessagePassing):
         super(GraphConv, self).__init__(aggr, flow)
         
         self.flow = flow
-        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(2, 256).double(),
+        self.mlp = torch.nn.Sequential(torch.nn.Linear(2, 16).double(),
                        torch.nn.Softplus(),
-                       torch.nn.Linear(256, 1).double())
-        self.mlp2 = torch.nn.Sequential(torch.nn.Linear(2, 256).double(),
+                       torch.nn.Linear(16, 16).double(),
                        torch.nn.Softplus(),
-                       torch.nn.Linear(256, 1).double())
-        self.mlp1.apply(init_weights)
-        self.mlp2.apply(init_weights)
+                       torch.nn.Linear(16, 1).double())
+        self.mlp.apply(init_weights)
         
     def forward(self, m, edge_index, x):
         x = x if x.dim() == 2 else x.unsqueeze(-1)
@@ -217,9 +221,9 @@ class GraphConv(MessagePassing):
     
     def message(self, x, edge_index):
         if self.flow == 'target_to_source':
-            return x.mul(self.mlp2(edge_index.double().t()))
+            return x.mul(self.mlp1(edge_index.double().t() / edge_index.max()))
         else:
-            return x.mul(self.mlp1(edge_index[0:2, :].double().t()))
+            return x.mul(self.mlp1(edge_index[0:2, :].double().t() / edge_index.max()))
             
     def update(self, aggr_out):
         if self.flow == 'target_to_source':
@@ -235,9 +239,11 @@ class GNNI(torch.nn.Module):
         self.Nc = Nc
         self.ggc1 = GraphConv("source_to_target")
         self.ggc2 = GraphConv("target_to_source")
-        self.mlp = torch.nn.Sequential(torch.nn.Linear(2, 256).double(),
+        self.mlp = torch.nn.Sequential(torch.nn.Linear(2, 16).double(),
                        torch.nn.Softplus(),
-                       torch.nn.Linear(256, 1).double())
+                       torch.nn.Linear(16, 16).double(),
+                       torch.nn.Softplus(),
+                       torch.nn.Linear(16, 1).double())
         self.mlp.apply(init_weights)
     
     def forward(self, data):
@@ -330,7 +336,6 @@ def test(decoder_a):
         datas = datas.to(device)
         pred = decoder_a(datas)
         
-#        print(pred)
         loss += criterion(pred, datas).item()
         
     return loss / (run2 * 2 * L ** 2)
@@ -367,4 +372,3 @@ if __name__ == '__main__':
         f.write(' %.15f ' % (loss))
         
         f.close()
-#   
