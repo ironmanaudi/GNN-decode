@@ -192,7 +192,7 @@ h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep())
 BATCH_SIZE = 128
 lr = 1e-4
-Nc = 10
+Nc = 5
 run1 = 40960
 run2 = 8192
 dataset1 = error_generate.gen_syn(P1, L, H, run1)
@@ -242,6 +242,12 @@ class GraphConv(MessagePassing):
         self.mlp2 = torch.nn.Sequential(torch.nn.Linear(2, 128).double(),
                        torch.nn.Softplus(),
                        torch.nn.Linear(128, 1).double())
+        self.mlp3 = torch.nn.Sequential(torch.nn.Linear(1, 128).double(),
+                       torch.nn.Softplus(),
+                       torch.nn.Linear(128, 1).double())
+        self.mlp4 = torch.nn.Sequential(torch.nn.Linear(1, 128).double(),
+                       torch.nn.Softplus(),
+                       torch.nn.Linear(128, 1).double())
         self.rnn1 = torch.nn.GRUCell(1, 1, bias=bias).double()
         self.rnn2 = torch.nn.GRUCell(1, 1, bias=bias).double()
         self.mlp.apply(init_weights)
@@ -270,9 +276,9 @@ class GraphConv(MessagePassing):
             
     def update(self, aggr_out):
         if self.flow == 'target_to_source':
-            return self.mlp2(aggr_out)
+            return self.mlp4(aggr_out[:, 0].clone().unsqueeze(1)).mul(aggr_out[:, 1].clone().unsqueeze(1))
         else:
-            return self.mlp1(aggr_out)
+            return self.mlp3(aggr_out)
     
 class GNNI(torch.nn.Module):
     def __init__(self, Nc):
