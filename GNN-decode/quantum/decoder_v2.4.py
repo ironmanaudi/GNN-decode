@@ -151,16 +151,15 @@ class CustomDataset(InMemoryDataset):
         return '{}()'.format(self.__class__.__name__) 
 
 
-torch.autograd.set_detect_anomaly(True)
 L = 4
-P1 = [0.01,0.02,0.03,0.04,0.05,0.06, 0.07,0.08,0.09,0.1]
+P1 = [0.01,0.02,0.03,0.04,0.05,0.06,0.07,0.08,0.09,0.1]
 P2 = [0.01]
 H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
 h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep())
 BATCH_SIZE = 128
 lr = 3e-4
-Nc = 5
+Nc = 10
 run1 = 40960
 run2 = 8192
 dataset1 = error_generate.gen_syn(P1, L, H, run1)
@@ -199,12 +198,14 @@ class GraphConv(MessagePassing):
         super(GraphConv, self).__init__(aggr, flow)
         
         self.flow = flow
-        self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 16).double(),
-                       torch.nn.Softplus(),
-                       torch.nn.Linear(16, 16).double(),
-                       torch.nn.Softplus(),
-                       torch.nn.Linear(16, 1).double())
-        self.mlp.apply(init_weights)
+        
+        if self.flow == 'target_to_source':
+            self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 16).double(),
+                           torch.nn.Softplus(),
+                           torch.nn.Linear(16, 16).double(),
+                           torch.nn.Softplus(),
+                           torch.nn.Linear(16, 1).double())
+            self.mlp.apply(init_weights)
 
     def forward(self, m, edge_index, x):
         '''
@@ -353,13 +354,18 @@ if __name__ == '__main__':
 #            f.close()
             
     if load:
-        f = open('./test_loss_for_trained_model.txt','a')
+#        f = open('./test_loss_for_trained_model.txt','a')
+#        f = open('./model_parameters_for_trained_model.txt','a')
         decoder_b = GNNI(Nc).to(device)
-        decoder_b.load_state_dict(torch.load('./model/decoder_parameters_epoch360.pkl'))
+        decoder_b.load_state_dict(torch.load('./model/decoder_parameters_epoch282.pkl'))
         
+            
+#        for name, param in decoder_b.named_parameters():
+#            if param.requires_grad:
+#                print(name, param.data)
         loss = test(decoder_b)
         print(loss)
-        f.write(' %.15f ' % (loss))
+#        f.write(' %.15f ' % (loss))
         
-        f.close()
-#   
+#        f.close()
+   
