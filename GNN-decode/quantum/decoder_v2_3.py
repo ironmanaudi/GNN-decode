@@ -192,7 +192,7 @@ P2 = [0.01]
 H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
 h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep())
-BATCH_SIZE = 64
+BATCH_SIZE = 128
 lr = 3e-4
 Nc = 10
 run1 = 40960
@@ -208,14 +208,20 @@ logical, stab = h_prep.get_logical(H_prep)
 logical, stab = logical.cuda(), stab.cuda()
 
 
-def init_weights(m, val=0.0884):
+def init_weights(m):
     if type(m) == torch.nn.Linear:
 #        torch.nn.init.xavier_uniform_(m.weight)
 #        torch.nn.init.constant_(m.weight, val)
 #        torch.nn.init.uniform_(m.weight, a=0.0884, b=0.1)
-        torch.nn.init.uniform_(m.weight, a=0, b=1)
+        torch.nn.init.uniform_(m.weight, a=0.1, b=1)
         m.bias.data.fill_(1e-3)
         
+
+def init_weights_one(m):
+    if type(m) == torch.nn.Linear:
+        torch.nn.init.uniform_(m.weight, a=0, b=0.5)
+        m.bias.data.fill_(1e-3)
+
 
 def a_p(grad):
     a = torch.where(abs(grad) < 1e-1, torch.ones(grad.size()).cuda(), torch.zeros(grad.size()).cuda())
@@ -239,8 +245,8 @@ class GraphConv(MessagePassing):
                        torch.nn.Softplus(),
                        torch.nn.Linear(128, 1).double())
         self.rnn = torch.nn.GRUCell(1, 1, bias=bias).double()
-#        self.mlp.apply(init_weights)
-#        self.mlp1.apply(init_weights)
+        self.mlp.apply(init_weights)
+        self.mlp1.apply(init_weights_one)
         
     def forward(self, m, edge_index, x, prev=None):
         x = x if x.dim() == 2 else x.unsqueeze(-1)
@@ -258,6 +264,7 @@ class GraphConv(MessagePassing):
         else:
             return self.mlp1(aggr_out)
     
+    
 class GNNI(torch.nn.Module):
     def __init__(self, Nc):
         super(GNNI, self).__init__()
@@ -268,11 +275,11 @@ class GNNI(torch.nn.Module):
         self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 128).double(),
                        torch.nn.Softplus(),
                        torch.nn.Linear(128, 1).double())
-#        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(2, 128).double(),
-#                       torch.nn.Softplus(),
-#                       torch.nn.Linear(128, 1).double())
-#        self.mlp.apply(init_weights)
-#        self.mlp1.apply(init_weights)
+        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(2, 128).double(),
+                       torch.nn.Softplus(),
+                       torch.nn.Linear(128, 1).double())
+        self.mlp.apply(init_weights)
+        self.mlp1.apply(init_weights_one)
     
     def forward(self, data):
         '''
@@ -293,7 +300,7 @@ class GNNI(torch.nn.Module):
             m = self.ggc2(m, edge_index, x, prev_b) + m_p
             
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
-#        m = self.mlp(m).mul(self.mlp1(edge_index[0:2, :].double().t() / edge_index.max()))
+        m = self.mlp(m).mul(self.mlp1(edge_index[0:2, :].double().t() / edge_index.max()))
         res = scatter_('add', m, edge_index[0], dim_size=size[0])
         
         idx = torch.LongTensor([x for x in range(rows)]).cuda()
@@ -303,7 +310,7 @@ class GNNI(torch.nn.Module):
             
         res = res[idx].clone()
 #        res = self.mlp(torch.cat([res, x[idx]], dim=1))
-        res = self.mlp(res) + x[idx]
+        res = res + x[idx]
 #        self.mlp(res)
         res = torch.sigmoid(-1 * self.mlp(res))
         
