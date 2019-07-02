@@ -160,14 +160,14 @@ class CustomDataset(InMemoryDataset):
 
 
 torch.autograd.set_detect_anomaly(True)
-L = 10
-P2 = [0.01]
+L = 4
+P2 = [0.1]
 H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
 h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep())
 BATCH_SIZE = 512
 Nc = 25
-run2 = 4096
+run2 = 10240
 dataset2 = error_generate.gen_syn(P2, L, H, run2)
 test_dataset = CustomDataset(H, dataset2)
 rows, cols = H.size(0), H.size(1)
@@ -214,7 +214,7 @@ class GNNI(torch.nn.Module):
             idx = torch.cat([idx, torch.LongTensor([x for x in range(i, i+rows)]).cuda()], dim=0)
         
         res = res[idx].clone() + x[idx]
-        res = torch.sigmoid(-1 * res)
+        res = torch.sigmoid(res)
         
         return res
 
@@ -234,8 +234,8 @@ class LossFunc(torch.nn.Module):
             tmp = torch.cat([tmp, y[i : i+self.a].clone()], dim=1)
             res = torch.cat([res, pred[i : i+self.a].clone()], dim=1)
             
-#        loss_p = torch.matmul(H.t().cuda(), res + tmp)     
-        loss_p = torch.matmul(logical, res + tmp)
+        loss_p = torch.matmul(logical, tmp + res)
+#        loss_p = torch.matmul(logical, res + tmp)
         loss = abs(torch.sin(loss_p * math.pi / 2)).sum()
         
         return loss

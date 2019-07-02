@@ -164,12 +164,12 @@ class CustomDataset(InMemoryDataset):
 
 torch.autograd.set_detect_anomaly(True)
 L = 4
-#P1 = [0.03, 0.04, 0.05, 0.06, 0.07, 0.08]
-P1 = [0.01,0.03,0.05, 0.07, 0.09, 0.11, 0.13]#, 0.15,0.17,0.19,0.20,0.21]
+P1 = [0.01,0.02,0.03, 0.04, 0.05, 0.06, 0.07, 0.08]
+#P1 = [0.01,0.03,0.05, 0.07, 0.09, 0.11, 0.13]#, 0.15,0.17,0.19,0.20,0.21]
 #P1 = [0.01]
 #P1 = [0.01,0.02,0.03,0.04,0.05,0.06, 0.07,0.08]
 #P1 = [0.01,0.04,0.07,0.1,0.13,0.16]
-P2 = [0.1]
+P2 = [0.01]
 H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
 h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep())
@@ -185,7 +185,8 @@ test_dataset = CustomDataset(H, dataset2)
 rows, cols = H.size(0), H.size(1)
 train_loader = DataLoader(train_dataset, batch_size = BATCH_SIZE, shuffle=False)
 test_loader = DataLoader(test_dataset, batch_size = BATCH_SIZE, shuffle=False)
-#print(h_prep.symplectic_product(H.t(), H_prep).sum())
+logical, stab = h_prep.get_logical(H_prep)
+logical, stab = logical.cuda(), stab.cuda()
 
 
 def a_p(grad):
@@ -237,8 +238,6 @@ class GatedGraphConv(MessagePassing):
     
     def update(self, aggr_out):
         if self.flow == 'target_to_source':
-#            return self.mlp2(aggr_out[:, 0].clone().unsqueeze(1)).mul(aggr_out[:, 1].clone().unsqueeze(1))
-#            return aggr_out[:, 0].clone().unsqueeze(1).mul(aggr_out[:, 1].clone().unsqueeze(1))
             return self.mlp2(aggr_out)
         else:
             return self.mlp1(aggr_out)
@@ -250,7 +249,7 @@ class GNNI(torch.nn.Module):
         self.Nc = Nc
         self.ggc1 = GatedGraphConv("source_to_target")
         self.ggc2 = GatedGraphConv("target_to_source")
-        self.mlp = torch.nn.Sequential(torch.nn.Linear(2, 10).double(),
+        self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
                        torch.nn.ReLU(),
                        torch.nn.Linear(10, 1).double())
     
@@ -276,10 +275,9 @@ class GNNI(torch.nn.Module):
             idx = torch.cat([idx, torch.LongTensor([x for x in range(i, i+rows)]).cuda()], dim=0)
         
         res = res[idx].clone()
-#        print(res.size(), x[idx].size())
-#        print(torch.cat([res, x[idx]], dim=0).size())
-        res = self.mlp(torch.cat([res, x[idx]], dim=1))
-#        res = torch.sigmoid(-1 * res)
+#        res = self.mlp(torch.cat([res, x[idx]], dim=1))
+        res = res + x[idx]
+        res = torch.sigmoid(-1 * res)
         
         return res
 
@@ -300,11 +298,8 @@ class LossFunc(torch.nn.Module):
             tmp = torch.cat([tmp, y[i : i+self.a].clone()], dim=1)
             res = torch.cat([res, pred[i : i+self.a].clone()], dim=1)
 
-#        deg = ((torch.where(res>0.5, torch.ones(res.size()).cuda(), torch.zeros(res.size()).cuda()) + tmp) % 2)
-#        deg = torch.where(deg==0, deg, torch.ones(deg.size()).cuda()).sum() / torch.numel(deg)
-#        print(deg.item())
-        
-        loss_p = torch.matmul(H.t().cuda(), res + tmp)
+        loss_p = torch.matmul(self.H_prep, res + tmp)
+#        loss_p = torch.matmul(logical, res + tmp)
         loss = abs(torch.sin(loss_p * math.pi / 2)).sum()
         
         return loss
@@ -312,8 +307,8 @@ class LossFunc(torch.nn.Module):
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 decoder = GNNI(Nc).to(device)
+#decoder.load_state_dict(torch.load('./model1/decoder_parameters_epoch60
 optimizer = torch.optim.Adam(decoder.parameters(), lr, weight_decay=1e-9)
-#optimizer = torch.optim.RMSprop(decoder.parameters(), lr, alpha=0.9)
 criterion = LossFunc(H, H_prep)
 
 
@@ -334,7 +329,7 @@ def train(epoch):
         
     if epoch % 6 == 0:
         f.write(' %.15f ' % (loss.item()))
-        torch.save(decoder.state_dict(), './model1/decoder_parameters_epoch%d.pkl' % (epoch))
+        torch.save(decoder.state_dict(), './model2/decoder_parameters_epoch%d.pkl' % (epoch))
         
     f.close()
     
@@ -350,7 +345,7 @@ def test(decoder_a):
         loss += criterion(pred, datas.y).item()
         
     return loss / (run2 * 2 * L ** 2)
-#    return loss / (run2 / BATCH_SIZE)
+#    return loss / (run2)
 
 
 if __name__ == '__main__':
@@ -361,22 +356,12 @@ if __name__ == '__main__':
             train(epoch)
             test_acc = test(decoder)
             print('Epoch: {:03d}, Test Acc: {:.10f}'.format(epoch, test_acc))
-    
-#    if load:
-#        for i in range(6, 211, 6):
-#            f = open('./test_loss_for_quantum.txt','a')
-#            decoder_a = GNNI(Nc).to(device)
-#            decoder_a.load_state_dict(torch.load('./model/decoder_parameters_epoch%d.pkl' % (i)))
-#            loss = test(decoder_a)
-#            print(loss)
-#            f.write(' %.15f ' % (loss))
-#            
-#            f.close()
+            
             
     if load:
         f = open('./test_loss_for_trained_model.txt','a')
         decoder_b = GNNI(Nc).to(device)
-        decoder_b.load_state_dict(torch.load('./model/decoder_parameters_epoch114.pkl'))
+        decoder_b.load_state_dict(torch.load('./model1/decoder_parameters_epoch90.pkl'))
         
         loss = test(decoder_b)
         print(loss)

@@ -221,9 +221,9 @@ class GraphConv(MessagePassing):
     
     def message(self, x, edge_index):
         if self.flow == 'target_to_source':
-            return x.mul(self.mlp1(edge_index.double().t() / edge_index.max()))
+            return x.mul(self.mlp(edge_index.double().t() / edge_index.max()))
         else:
-            return x.mul(self.mlp1(edge_index[0:2, :].double().t() / edge_index.max()))
+            return x.mul(self.mlp(edge_index[0:2, :].double().t() / edge_index.max()))
             
     def update(self, aggr_out):
         if self.flow == 'target_to_source':

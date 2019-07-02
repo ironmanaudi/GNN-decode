@@ -151,10 +151,9 @@ class CustomDataset(InMemoryDataset):
         return '{}()'.format(self.__class__.__name__) 
 
 
-torch.autograd.set_detect_anomaly(True)
 L = 4
-P1 = [0.01,0.02,0.03,0.04,0.05,0.06, 0.07,0.08]
-P2 = [0.01]
+P1 = [0.01,0.02,0.03,0.04,0.05,0.06, 0.07,0.08, 0.09,0.1]
+P2 = [0.1]
 H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
 h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep())
@@ -277,10 +276,9 @@ class LossFunc(torch.nn.Module):
 #                             torch.zeros(res.size(), dtype=torch.float64).cuda()).cuda()
 #        err = (pred_p + tmp) % 2
 #        print('a', tmp.sum().item()/tmp.numel(), err.sum().item()/tmp.numel())
-#        loss_p = torch.matmul(self.H_prep, tmp + res)
-        loss_a = torch.matmul(self.H_prep, res + tmp)
+#        loss_a = torch.matmul(self.H_prep, res + tmp)
+        loss_a = torch.matmul(logical, tmp + res)
         loss = abs(torch.sin(loss_a * math.pi / 2))
-#        loss_b = torch.matmul(logical, tmp + res)
 #        loss = abs(torch.sin(loss_a * math.pi / 2)).sum() #+ abs(torch.sin(loss_b * math.pi / 2)).sum()
 #        loss = loss + alpha * res.sum()
 #        log_loss = torch.matmul(logical, tmp)
@@ -330,13 +328,13 @@ def test(decoder_a):
         
         loss += criterion(pred, datas).item()
         
-    return loss / (run2 * 2 * L ** 2)
-#    return loss / run2
+#    return loss / (run2 * 2 * L ** 2)
+    return loss / run2
 
 
 if __name__ == '__main__':
-    training = 1
-    load = 0
+    training = 0
+    load = 1
     if training:
         for epoch in range(1, 481):
             train(epoch)
@@ -357,7 +355,7 @@ if __name__ == '__main__':
     if load:
         f = open('./test_loss_for_trained_model.txt','a')
         decoder_b = GNNI(Nc).to(device)
-        decoder_b.load_state_dict(torch.load('./model/decoder_parameters_epoch30.pkl'))
+        decoder_b.load_state_dict(torch.load('./model/decoder_parameters_epoch90.pkl'))
         
         loss = test(decoder_b)
         print(loss)

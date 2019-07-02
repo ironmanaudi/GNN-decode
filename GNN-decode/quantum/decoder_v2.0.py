@@ -21,6 +21,9 @@ import error_generate
 import torch_scatter
 from torch_scatter import scatter_add
 
+'''
+PDP version of decoder
+'''
 
 def scatter_mean(src, index, dim=-1, out=None, dim_size=None, fill_value=0):
     out = scatter_add(src, index, dim, out, dim_size, fill_value)[index] - src
@@ -28,10 +31,6 @@ def scatter_mean(src, index, dim=-1, out=None, dim_size=None, fill_value=0):
     count = scatter_add(torch.ones_like(src), index, dim, None, out.size(dim))[index] - 1
     return out / count.clamp(min=1)
 
-
-'''
-PDP version of decoder
-'''
 
 def scatter_(name, src, index, dim_size=None):
     assert name in ['add', 'mean', 'max']
@@ -140,8 +139,8 @@ class MessagePassing(torch.nn.Module):
             out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
         
         if self.flow == 'source_to_target':
-            out = out + extra[edge_index[j]]
-#            out = torch.cat([out, extra[edge_index[j]]], dim=1)
+#            out = out + extra[edge_index[j]]
+            out = torch.cat([out, extra[edge_index[j]]], dim=1)
         else:
             out = torch.cat([out, extra[edge_index[j]]], dim=1)
 #        print(self.flow, extra[edge_index[j]])
@@ -187,7 +186,6 @@ class CustomDataset(InMemoryDataset):
 
 torch.autograd.set_detect_anomaly(True)
 L = 4
-#lambda_a = 0.5
 #P1 = [0.01,0.03,0.05, 0.07, 0.09, 0.11, 0.13]#, 0.15,0.17,0.19,0.20,0.21]
 #P1 = [0.1]
 P1 = [0.01,0.02,0.03,0.04,0.05,0.06, 0.07,0.08]
@@ -196,9 +194,8 @@ P2 = [0.01]
 H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
 h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep())
-#print(H_prep.size())
-BATCH_SIZE = 512
-lr = 3e-4
+BATCH_SIZE = 128
+lr = 1e-4
 Nc = 25
 run1 = 40960
 run2 = 8192
@@ -209,19 +206,13 @@ test_dataset = CustomDataset(H, dataset2)
 rows, cols = H.size(0), H.size(1)
 train_loader = DataLoader(train_dataset, batch_size = BATCH_SIZE, shuffle=False)
 test_loader = DataLoader(test_dataset, batch_size = BATCH_SIZE, shuffle=False)
-#print(h_prep.symplectic_product(H.t(), H_prep).sum())
 logical, stab = h_prep.get_logical(H_prep)
 logical, stab = logical.cuda(), stab.cuda()
 
 
 def a_p(grad):
     a = torch.where(abs(grad) < 1e-1, torch.ones(grad.size()).cuda(), torch.zeros(grad.size()).cuda())
-#    print(a.sum().item() / grad.numel())
     print(abs(grad).min().item(), abs(grad).max().item(), a.sum().item() / grad.numel())
-#    f = open('./grad.txt','w')
-#    for i in grad
-#        f.write('%f, '%i.item())
-#    f.close()
     
 
 class GraphConv(MessagePassing):
@@ -229,34 +220,39 @@ class GraphConv(MessagePassing):
         super(GraphConv, self).__init__(aggr, flow)
         
         self.flow = flow
-        self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
-                       torch.nn.ReLU(),
-                       torch.nn.Linear(10, 1).double())
-        self.mlp2 = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
-                       torch.nn.ReLU(),
-                       torch.nn.Linear(10, 1).double())
+        self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 128).double(),
+                       torch.nn.Softplus(),
+                       torch.nn.Linear(128, 1).double())
+        self.mlp_p = torch.nn.Sequential(torch.nn.Linear(1, 128).double(),
+                       torch.nn.Softplus(),
+                       torch.nn.Linear(128, 1).double())
+        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(2, 128).double(),
+                       torch.nn.Softplus(),
+                       torch.nn.Linear(128, 1).double())
+        self.mlp2 = torch.nn.Sequential(torch.nn.Linear(2, 128).double(),
+                       torch.nn.Softplus(),
+                       torch.nn.Linear(128, 1).double())
+        self.rnn1 = torch.nn.GRUCell(1, 1, bias=bias).double()
+        self.rnn2 = torch.nn.GRUCell(1, 1, bias=bias).double()
         
-    def forward(self, m, edge_index, x):
-        '''
-        GGC behaviour need to be modified to fellow BP decoding, which will have 2 phases of iteration; also note that phase2 use 
-        the proir knoledge to update rather than the last hidden state of x
-        '''
+    def forward(self, m, edge_index, x, prev=None):
         x = x if x.dim() == 2 else x.unsqueeze(-1)
         
+#        if self.flow == 'target_to_source': m = self.mlp(m)
+#        else: m = self.mlp_p(m)
+#        m = self.mlp(m)
         mes = self.propagate(edge_index=edge_index, size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE), x=m, extra=x)
         
+        if prev is not None and self.flow == 'target_to_source':mes = self.rnn2(mes, prev)
+        elif prev is not None and self.flow == 'source_to_target':mes = self.rnn1(mes, prev)
+#        if prev is not None:mes = self.rnn1(mes, prev)
         return mes
     
     def update(self, aggr_out):
         if self.flow == 'target_to_source':
-            aggr_out[:, 0] = self.mlp(aggr_out[:, 0].clone().unsqueeze(1)).squeeze(1)
-            
-            return aggr_out[:, 0].clone().unsqueeze(1).mul(aggr_out[:, 1].clone().unsqueeze(1))
-#            return self.mlp2(aggr_out)
+            return self.mlp2(aggr_out)
         else:
-            return aggr_out
-#            return self.mlp(aggr_out[:, 0].clone().unsqueeze(1)) + self.mlp1(aggr_out[:, 1].clone().unsqueeze(1))
-#            return aggr_out
+            return self.mlp1(aggr_out)
     
     
 class GNNI(torch.nn.Module):
@@ -266,9 +262,12 @@ class GNNI(torch.nn.Module):
         self.Nc = Nc
         self.ggc1 = GraphConv("source_to_target")
         self.ggc2 = GraphConv("target_to_source")
-        self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 10).double(),
-                       torch.nn.ReLU(),
-                       torch.nn.Linear(10, 1).double())
+        self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 128).double(),
+                       torch.nn.Softplus(),
+                       torch.nn.Linear(128, 1).double())
+        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(1, 128).double(),
+                       torch.nn.Softplus(),
+                       torch.nn.Linear(128, 1).double())
     
     def forward(self, data):
         '''
@@ -277,25 +276,31 @@ class GNNI(torch.nn.Module):
         x = data.x
         edge_index = torch.cat([data.edge_index[0].clone().unsqueeze(0), data.edge_index[1].clone().unsqueeze(0).add(rows)], dim=0)
         m = Variable(torch.zeros((edge_index.size()[1], 1), dtype = torch.float64), requires_grad=False).cuda()
+        m = self.mlp1(m)
+        
+        m = self.ggc1(m, edge_index, x)
+        prev_a = m.clone()
+        m = self.ggc2(m, edge_index, x)
+        prev_b = m.clone()
         
         for i in range(self.Nc):
             m_p = m.clone()
-            m = self.ggc1(m, edge_index, x)
-            m = self.ggc2(m, edge_index, x) + m_p
+            m = self.ggc1(m, edge_index, x, prev_a)
+            m = self.ggc2(m, edge_index, x, prev_b) + m_p
             
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
-        res = scatter_('add', m, edge_index[0], dim_size=size[0]) + x
+        res = scatter_('add', m, edge_index[0], dim_size=size[0])
         
         idx = torch.LongTensor([x for x in range(rows)]).cuda()
         
         for i in range(rows+cols, len(res), rows+cols):
             idx = torch.cat([idx, torch.LongTensor([x for x in range(i, i+rows)]).cuda()], dim=0)
-        
+            
         res = res[idx].clone()
 #        res = self.mlp(torch.cat([res, x[idx]], dim=1))
-#        res = res + x[idx]
-        res = self.mlp(res)
-        res = torch.sigmoid(res)
+        res = self.mlp(res) + x[idx]
+#        self.mlp(res)
+        res = torch.sigmoid(-1 * self.mlp(res))
         
         return res
 
@@ -310,16 +315,13 @@ class LossFunc(torch.nn.Module):
     def forward(self, pred, datas):
         tmp = datas.y[0 : self.a].clone()
         res = pred[0 : self.a].clone()
-#        syn = datas.x[self.a : self.a+self.b]
         
         for i in range(self.a, len(datas.y), self.a):
-#            tmp = torch.cat([tmp, datas.y[i : i+self.a].clone()], dim=1)
+            tmp = torch.cat([tmp, datas.y[i : i+self.a].clone()], dim=1)
             res = torch.cat([res, pred[i : i+self.a].clone()], dim=1)
-              
-#        for i in range(self.a+self.b, len(datas.x), self.a+self.b):
-#            syn = torch.cat([syn, datas.x[i+self.a : i+self.a+self.b].clone()], dim=1)
             
         loss_p = torch.matmul(self.H_prep, tmp + res)
+#        loss_p = torch.matmul(H.t().cuda(), tmp + res)
         loss = abs(torch.sin(loss_p * math.pi / 2)).sum()
         
         return loss
@@ -329,7 +331,6 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 decoder = GNNI(Nc).to(device)
 #decoder.load_state_dict(torch.load('./model1/decoder_parameters_epoch6.pkl'))
 optimizer = torch.optim.Adam(decoder.parameters(), lr, weight_decay=1e-9)
-#optimizer = torch.optim.RMSprop(decoder.parameters(), lr, alpha=0.9)
 criterion = LossFunc(H, H_prep)
 
 
@@ -341,17 +342,18 @@ def train(epoch):
         datas = datas.to(device)
         optimizer.zero_grad()
         loss = criterion(decoder(datas), datas)
-        loss.backward()
         
 #        for p in decoder.parameters():
-#            print(p.grad.sum().item())
-        torch.nn.utils.clip_grad_norm_(decoder.parameters(), 0.65)
+#            print(p.grad.max().item())
+        
+        loss.backward()
+#        torch.nn.utils.clip_grad_norm_(decoder.parameters(), 0.65)
         
         optimizer.step()
         
     if epoch % 6 == 0:
         f.write(' %.15f ' % (loss.item()))
-        torch.save(decoder.state_dict(), './model2/decoder_parameters_epoch%d.pkl' % (epoch))
+        torch.save(decoder.state_dict(), './model/decoder_parameters_epoch%d.pkl' % (epoch))
         
     f.close()
     
@@ -361,6 +363,7 @@ def train(epoch):
 def test(decoder_a):
     decoder_a.eval()
     loss = 0
+    
     for datas in test_loader:
         datas = datas.to(device)
         pred = decoder_a(datas)

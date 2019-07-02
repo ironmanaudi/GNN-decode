@@ -185,13 +185,13 @@ class CustomDataset(InMemoryDataset):
 
 torch.autograd.set_detect_anomaly(True)
 L = 4
-P1 = [0.01,0.02,0.03,0.04,0.05,0.06, 0.07,0.08,0.09,0.1]
+P1 = [0.01,0.02,0.03,0.04,0.05,0.06,0.07,0.08,0.09,0.1]
 P2 = [0.01]
 H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
 h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep())
 BATCH_SIZE = 128
-lr = 1e-4
+lr = 3e-4
 Nc = 10
 run1 = 40960
 run2 = 8192
@@ -206,7 +206,7 @@ logical, stab = h_prep.get_logical(H_prep)
 logical, stab = logical.cuda(), stab.cuda()
 
 
-def init_weights(m, val=0.0884):
+def init_weights(m):
     if type(m) == torch.nn.Linear:
 #        torch.nn.init.xavier_uniform_(m.weight)
 #        torch.nn.init.constant_(m.weight, val)
@@ -233,52 +233,38 @@ class GraphConv(MessagePassing):
         self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 128).double(),
                        torch.nn.Softplus(),
                        torch.nn.Linear(128, 1).double())
-        self.mlp_p = torch.nn.Sequential(torch.nn.Linear(1, 128).double(),
-                       torch.nn.Softplus(),
-                       torch.nn.Linear(128, 1).double())
         self.mlp1 = torch.nn.Sequential(torch.nn.Linear(2, 128).double(),
                        torch.nn.Softplus(),
                        torch.nn.Linear(128, 1).double())
-        self.mlp2 = torch.nn.Sequential(torch.nn.Linear(2, 128).double(),
+        self.mlp2 = torch.nn.Sequential(torch.nn.Linear(1, 128).double(),
                        torch.nn.Softplus(),
                        torch.nn.Linear(128, 1).double())
-        self.mlp3 = torch.nn.Sequential(torch.nn.Linear(1, 128).double(),
-                       torch.nn.Softplus(),
-                       torch.nn.Linear(128, 1).double())
-        self.mlp4 = torch.nn.Sequential(torch.nn.Linear(1, 128).double(),
-                       torch.nn.Softplus(),
-                       torch.nn.Linear(128, 1).double())
-        self.rnn1 = torch.nn.GRUCell(1, 1, bias=bias).double()
-        self.rnn2 = torch.nn.GRUCell(1, 1, bias=bias).double()
+        self.rnn = torch.nn.GRUCell(1, 1, bias=bias).double()
         self.mlp.apply(init_weights)
-        self.mlp_p.apply(init_weights)
         self.mlp1.apply(init_weights)
         self.mlp2.apply(init_weights)
         
     def forward(self, m, edge_index, x, prev=None):
         x = x if x.dim() == 2 else x.unsqueeze(-1)
         
-        if self.flow == 'target_to_source': m = self.mlp(m)
-        else: m = self.mlp_p(m)
         m = self.mlp(m)
-        mes = self.propagate(edge_index=edge_index, size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE), x=m, extra=x)
+        m = self.propagate(edge_index=edge_index, size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE), x=m, extra=x)
         
-        if prev is not None and self.flow == 'target_to_source':mes = self.rnn2(mes, prev)
-        elif prev is not None and self.flow == 'source_to_target':mes = self.rnn1(mes, prev)
+        if prev is not None:m = self.rnn(m, prev)
         
-        return mes
+        return m
     
     def message(self, x, edge_index):
         if self.flow == 'target_to_source':
-            return x.mul(self.mlp2(edge_index.double().t() / edge_index.max()))
+            return x.mul(self.mlp1(edge_index.double().t() / edge_index.max()))
         else:
             return x.mul(self.mlp1(edge_index[0:2, :].double().t() / edge_index.max()))
             
     def update(self, aggr_out):
         if self.flow == 'target_to_source':
-            return self.mlp4(aggr_out[:, 0].clone().unsqueeze(1)).mul(aggr_out[:, 1].clone().unsqueeze(1))
+            return self.mlp2(aggr_out[:, 0].clone().unsqueeze(1)).mul(aggr_out[:, 1].clone().unsqueeze(1))
         else:
-            return self.mlp3(aggr_out)
+            return self.mlp2(aggr_out)
     
 class GNNI(torch.nn.Module):
     def __init__(self, Nc):
@@ -342,7 +328,6 @@ class LossFunc(torch.nn.Module):
     def forward(self, pred, datas):
         tmp = datas.y[0 : self.a].clone()
         res = pred[0 : self.a].clone()
-#        syn = datas.x[self.a : self.a+self.b]
         
         for i in range(self.a, len(datas.y), self.a):
             tmp = torch.cat([tmp, datas.y[i : i+self.a].clone()], dim=1)
@@ -359,7 +344,6 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 decoder = GNNI(Nc).to(device)
 #decoder.load_state_dict(torch.load('./model1/decoder_parameters_epoch6.pkl'))
 optimizer = torch.optim.Adam(decoder.parameters(), lr, weight_decay=1e-9)
-#optimizer = torch.optim.RMSprop(decoder.parameters(), lr, alpha=0.9)
 criterion = LossFunc(H, H_prep)
 
 
