@@ -247,7 +247,7 @@ class GNNI(torch.nn.Module):
         '''
         x = data.x
         edge_index = torch.cat([data.edge_index[0].clone().unsqueeze(0), data.edge_index[1].clone().unsqueeze(0).add(rows)], dim=0)
-        m = Variable(torch.zeros((edge_index.size()[1], 1), dtype = torch.float64), requires_grad=False).cuda()
+        m = Variable(torch.zeros((edge_index.size()[1], 1), dtype = torch.float64).cuda(), requires_grad=False)
         
         for i in range(self.Nc):
             m_p = m.clone()
@@ -255,15 +255,14 @@ class GNNI(torch.nn.Module):
             m = self.ggc2(m, edge_index, x) + m_p
         
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
-        res = scatter_('add', m, edge_index[0], dim_size=size[0]) + x
+        idx = torch.LongTensor([x for x in range(rows)]).cuda()
         
-        tmp = res[0 : rows].clone()
+        for i in range(rows+cols, len(x), rows+cols):
+            idx = torch.cat([idx, torch.LongTensor([x for x in range(i, i+rows)]).cuda()], dim=0)
         
-        for i in range(rows+cols, len(res), rows+cols):
-            tmp = torch.cat([tmp, res[i : i+rows].clone()], dim=0)
-            
-        res = self.mlp(tmp)
+        res = scatter_('add', self.mlp(m), edge_index[0], dim_size=size[0])[idx].clone() + x[idx]
         res = torch.sigmoid(-1 * res)
+#        res = torch.clamp(res, 1e-10, 1-1e-1)
         
         return res
 
@@ -285,7 +284,9 @@ class LossFunc(torch.nn.Module):
             
         loss_a = torch.matmul(self.H_prep, res + tmp)
 #        loss_a = torch.matmul(logical, tmp + res)
+#        loss = -1 * (1 - tmp).mul(torch.log(1 - res)) - tmp.mul(torch.log(res))
         loss = abs(torch.sin(loss_a * math.pi / 2))
+        
         return loss.sum()
     
 
@@ -313,7 +314,7 @@ def train(epoch):
         
     if epoch % 6 == 0:
         f.write(' %.15f ' % (loss.item()))
-        torch.save(decoder.state_dict(), './model/decoder_parameters_epoch%d.pkl' % (epoch))
+        torch.save(decoder.state_dict(), './new_model/decoder_parameters_epoch%d.pkl' % (epoch))
         
     f.close()
     
@@ -334,7 +335,7 @@ def test(decoder_a):
 
 
 if __name__ == '__main__':
-    training = 0
+    training = 1
     load = 1 - training
     if training:
         for epoch in range(1, 481):
