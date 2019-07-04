@@ -173,12 +173,12 @@ logical, stab = h_prep.get_logical(H_prep)
 logical, stab = logical.cuda(), stab.cuda()
 
 
-def init_weights(m, val=0.0884):
+def init_weights(m):
     if type(m) == torch.nn.Linear:
 #        torch.nn.init.xavier_uniform_(m.weight)
-#        torch.nn.init.constant_(m.weight, 0.1574)
+        torch.nn.init.constant_(m.weight, 0)
 #        torch.nn.init.uniform_(m.weight, a=0.0884, b=0.1)
-        torch.nn.init.uniform_(m.weight, a=0.1574, b=0.3)
+#        torch.nn.init.uniform_(m.weight, a=-1e-2, b=1)
         m.bias.data.fill_(1e-2)
         
         
@@ -260,7 +260,9 @@ class GNNI(torch.nn.Module):
         for i in range(rows+cols, len(x), rows+cols):
             idx = torch.cat([idx, torch.LongTensor([x for x in range(i, i+rows)]).cuda()], dim=0)
         
-        res = scatter_('add', self.mlp(m), edge_index[0], dim_size=size[0])[idx].clone() + x[idx]
+        res = scatter_('add', m, edge_index[0], dim_size=size[0])[idx].clone() + x[idx]
+        res = self.mlp(res)
+        
         res = torch.sigmoid(-1 * res)
 #        res = torch.clamp(res, 1e-10, 1-1e-1)
         
