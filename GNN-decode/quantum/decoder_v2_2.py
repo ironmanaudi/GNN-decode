@@ -255,16 +255,14 @@ class GNNI(torch.nn.Module):
         
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
         
+        idx = torch.LongTensor([x for x in range(rows)]).cuda()
+        
+        for i in range(rows+cols, len(x), rows+cols):
+            idx = torch.cat([idx, torch.LongTensor([x for x in range(i, i+rows)]).cuda()], dim=0)
+        
         for j in range(len(results)):
-            results[j] = self.mlp(scatter_('add', results[j].clone(), edge_index[0], dim_size=size[0])) + x
-            
-            tmp = results[j][0 : rows].clone()
-            
-            for i in range(rows+cols, len(results[j]), rows+cols):
-                tmp = torch.cat([tmp, results[j][i : i+rows].clone()], dim=0)
-            
-#            results[j] = self.mlp(tmp)
-            
+            results[j] = self.mlp(scatter_('add', results[j].clone(), edge_index[0], dim_size=size[0]))
+            results[j] = results[j][idx].clone() + x[idx]
             results[j] = torch.sigmoid(-1 * results[j].clone())
         
         return results
