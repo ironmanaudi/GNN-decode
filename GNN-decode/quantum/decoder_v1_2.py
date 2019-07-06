@@ -163,10 +163,13 @@ h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep())
 BATCH_SIZE = 128
 lr = 1e-3
-Nc = 15
+Nc = 10
 run1 = 40960
 run2 = 8192
 index = torch.LongTensor([1,0])
+adj = H.to_sparse()
+edge_info = torch.cat([adj._indices()[0].unsqueeze(0), \
+                         adj._indices()[1].unsqueeze(0).add(H.size()[0])], dim=0).repeat(1, BATCH_SIZE).cuda()
 dataset1 = error_generate.gen_syn(P1, L, H, run1)
 dataset2 = error_generate.gen_syn(P2, L, H, run2)
 train_dataset = CustomDataset(H, dataset1)
@@ -180,10 +183,8 @@ logical, stab = logical.cuda(), stab.cuda()
 
 def init_weights(m):
     if type(m) == torch.nn.Linear:
-        torch.nn.init.constant_(m.weight, 0.1)
+        torch.nn.init.constant_(m.weight, 0.05755)
         m.bias.data.fill_(1e-4)
-#        torch.nn.init.constant_(m.weight, 0.1)
-#        m.bias.data.fill_(1e-2)
         
 
 def a_p(grad):
@@ -196,13 +197,11 @@ class GraphConv(MessagePassing):
         super(GraphConv, self).__init__(aggr, flow)
         
         self.flow = flow
-        self.mlp1 = torch.nn.Sequential(torch.nn.BatchNorm1d(2).double(),
+        self.mlp1 = torch.nn.Sequential(#torch.nn.BatchNorm1d(2).double(),
                        torch.nn.Linear(2, 16).double(),
                        torch.nn.Softplus(),
-                       torch.nn.BatchNorm1d(16).double(),
                        torch.nn.Linear(16, 16).double(),
                        torch.nn.Softplus(),
-                       torch.nn.BatchNorm1d(16).double(),
                        torch.nn.Linear(16, 1).double())
         self.mlp1.apply(init_weights)
         
@@ -226,9 +225,10 @@ class GraphConv(MessagePassing):
     
     def message(self, x, edge_index):
         if self.flow == 'target_to_source':
-            return x.mul(self.mlp1(edge_index.double().t()))
+#            print(self.mlp1(edge_info.double().t() / edge_info.max()))
+            return x.mul(self.mlp1(edge_info.double().t() / edge_info.max()))
         else:
-            return x.mul(self.mlp1(edge_index[index].double().t()))
+            return x.mul(self.mlp1(edge_info[index].double().t() / edge_info.max()))
             
     def update(self, aggr_out):
         if self.flow == 'target_to_source':

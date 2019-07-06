@@ -175,6 +175,9 @@ Nc = 5
 run1 = 40960
 run2 = 8192
 index = torch.LongTensor([1,0])
+adj = H.to_sparse()
+edge_info = torch.cat([adj._indices()[0].unsqueeze(0), \
+                         adj._indices()[1].unsqueeze(0).add(H.size()[0])], dim=0).repeat(1, BATCH_SIZE).cuda()
 dataset1 = error_generate.gen_syn(P1, L, H, run1)
 dataset2 = error_generate.gen_syn(P2, L, H, run2)
 train_dataset = CustomDataset(H, dataset1)
@@ -188,7 +191,7 @@ logical, stab = logical.cuda(), stab.cuda()
 
 def init_weights(m):
     if type(m) == torch.nn.Linear:
-        torch.nn.init.constant_(m.weight, -0.01)
+        torch.nn.init.constant_(m.weight, 0.05755)
         m.bias.data.fill_(1e-4)
 
 
@@ -219,10 +222,9 @@ class GraphConv(MessagePassing):
     def message(self, x, edge_index):
         if self.flow == 'target_to_source':
 #            print(self.mlp(edge_index.double().t()).t())
-            return x.mul(self.mlp(edge_index.double().t() / edge_index.max()))
+            return x.mul(self.mlp(edge_info.double().t() / edge_info.max()))
         else:
-            
-            return x.mul(self.mlp(edge_index[index].double().t() / edge_index.max()))
+            return x.mul(self.mlp(edge_info[index].double().t() / edge_info.max()))
     
     
 class GNNI(torch.nn.Module):
@@ -256,50 +258,21 @@ class GNNI(torch.nn.Module):
             results.append(m)
             
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
-        w = self.mlp(edge_index[index].double().t() / edge_index.max())
+        w = self.mlp(edge_info[index].double().t() / edge_info.max())
 #        print(w.t())
         m = m.mul(w)
-        res = scatter_('add', m, edge_index[0], dim_size=size[0])
         
         idx = torch.LongTensor([x for x in range(rows)]).cuda()
         
-        for i in range(rows+cols, len(res), rows+cols):
+        for i in range(rows+cols, len(x), rows+cols):
             idx = torch.cat([idx, torch.LongTensor([x for x in range(i, i+rows)]).cuda()], dim=0)
         
-        res = res[idx].clone()+ x[idx]
-        res = torch.sigmoid(-1 * res)
-        
-        return res
-
-def forward(self, data):
-        '''
-        this part need to sum up the message and return
-        '''
-        x = data.x
-        edge_index = torch.cat([data.edge_index[0].clone().unsqueeze(0), data.edge_index[1].clone().unsqueeze(0).add(rows)], dim=0)
-        m = Variable(torch.zeros((edge_index.size()[1], 1), dtype = torch.float64), requires_grad=False).cuda()
-        results = []
-        
-        for i in range(self.Nc):
-            m_p = m.clone()
-            m = self.ggc1(m, edge_index, x)
-            m = self.ggc2(m, edge_index, x) + m_p
-            results.append(m)
-        
-        size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
-        
         for j in range(len(results)):
-            results[j] = self.mlp(scatter_('add', results[j].clone(), edge_index[0], dim_size=size[0])) + x
-            
-            tmp = results[j][0 : rows].clone()
-            
-            for i in range(rows+cols, len(results[j]), rows+cols):
-                tmp = torch.cat([tmp, results[j][i : i+rows].clone()], dim=0)
-            
+            results[j] = scatter_('add', results[j].clone(), edge_index[0], dim_size=size[0])
+            results[j] = results[j][idx].clone() + x[idx]
             results[j] = torch.sigmoid(-1 * results[j].clone())
         
         return results
-
 
 
 class LossFunc(torch.nn.Module):
@@ -309,18 +282,24 @@ class LossFunc(torch.nn.Module):
         self.a, self.b = max(H.size()), min(H.size())
         self.H_prep = H_prep.cuda()
         
-    def forward(self, pred, datas):
-        tmp = datas.y[0 : self.a].clone()
-        res = pred[0 : self.a].clone()
+    def forward(self, preds, y, train):
+        if not train:
+            preds = [preds[len(preds) - 1].clone()]
+            
+        tmp = y[0 : self.a].clone()
+        loss = Variable(torch.zeros(1, dtype=torch.float64)).cuda()
         
-        for i in range(self.a, len(datas.y), self.a):
-            tmp = torch.cat([tmp, datas.y[i : i+self.a].clone()], dim=1)
-            res = torch.cat([res, pred[i : i+self.a].clone()], dim=1)
-              
-        loss_p = torch.matmul(self.H_prep, tmp + res)
-#        loss_p = torch.matmul(logical, tmp + res)
-        loss = abs(torch.sin(loss_p * math.pi / 2)).sum()
-        
+        for i in range(self.a, len(y), self.a):
+            tmp = torch.cat([tmp, y[i : i+self.a].clone()], dim=1)
+            
+        for j in range(len(preds)):
+            res = preds[j][0 : self.a].clone()
+            
+            for i in range(self.a, len(y), self.a):
+                res = torch.cat([res, preds[j][i : i+self.a].clone()], dim=1)
+            
+            loss += abs(torch.sin(torch.matmul(self.H_prep, tmp + res) * math.pi / 2)).sum()
+
         return loss
     
 
@@ -338,16 +317,15 @@ def train(epoch):
     for datas in train_loader:
         datas = datas.to(device)
         optimizer.zero_grad()
-        loss = criterion(decoder(datas), datas)
+        loss = criterion(decoder(datas), datas.y, train=1)
         loss.backward()
         
 #        for p in decoder.parameters():
 #            print(p.grad.sum().item())
-#        torch.nn.utils.clip_grad_norm_(decoder.parameters(), 0.65)
         
         optimizer.step()
         
-    if epoch % 1 == 0:
+    if epoch % 6 == 0:
         f.write(' %.15f ' % (loss.item()))
         torch.save(decoder.state_dict(), './neural_BP/decoder_parameters_epoch%d.pkl' % (epoch))
         
@@ -363,7 +341,7 @@ def test(decoder_a):
         datas = datas.to(device)
         pred = decoder_a(datas)
         
-        loss += criterion(pred, datas).item()
+        loss += criterion(pred, datas.y, train=0).item()
         
     return loss / (run2 * 2 * L ** 2)
 #    return loss / run2

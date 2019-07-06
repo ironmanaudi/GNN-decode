@@ -54,7 +54,7 @@ class MessagePassing(torch.nn.Module):
         ]
         self.__update_args__ = inspect.getfullargspec(self.update)[0][2:]
 
-    def propagate(self, edge_index, extra=None, size=None, **kwargs):
+    def propagate(self, edge_index, edge_info, extra=None, size=None, **kwargs):
         size = [None, None] if size is None else list(size)
         assert len(size) == 2
 
@@ -111,9 +111,9 @@ class MessagePassing(torch.nn.Module):
         
         if self.flow == 'source_to_target':
             out = out + extra[edge_index[j]]
-            out = torch.cat([out, edge_index.double().t() / edge_index.max()], dim=1)
+            out = torch.cat([out, edge_info.double().t()], dim=1)
         else:
-            out = torch.cat([out, edge_index[0:2, :].double().t() / edge_index.max()], dim=1)
+            out = torch.cat([out, edge_info[torch.LongTensor([1,0])].double().t()], dim=1)
             out = torch.cat([out, extra[edge_index[j]]], dim=1)
             
         out = self.update(out, *update_args)
@@ -166,8 +166,12 @@ H_prep = torch.from_numpy(h_prep.get_H_Prep())
 BATCH_SIZE = 128
 lr = 3e-4
 Nc = 5
-run1 = 40960
-run2 = 8192
+run1 = 2048#40960
+run2 = 256#8192
+index = torch.LongTensor([1,0])
+adj = H.to_sparse()
+edge_info = torch.cat([adj._indices()[0].unsqueeze(0), \
+                         adj._indices()[1].unsqueeze(0).add(H.size()[0])], dim=0).repeat(1, BATCH_SIZE).cuda()
 dataset1 = error_generate.gen_syn(P1, L, H, run1)
 dataset2 = error_generate.gen_syn(P2, L, H, run2)
 train_dataset = CustomDataset(H, dataset1)
@@ -181,15 +185,15 @@ logical, stab = logical.cuda(), stab.cuda()
 
 def init_weights(m):
     if type(m) == torch.nn.Linear:
-        torch.nn.init.constant_(m.weight, 0.0575767)
+        torch.nn.init.constant_(m.weight, -0.01)
         m.bias.data.fill_(1e-3)
 
 
 def init_weights_2(m):
     if type(m) == torch.nn.Linear:
 #        torch.nn.init.uniform_(m.weight, a=0.0884, b=0.1)
-#        torch.nn.init.constant_(m.weight, 4.43)
-        torch.nn.init.uniform_(m.weight, a=4.43, b=0.5)
+        torch.nn.init.constant_(m.weight, 0.01)
+#        torch.nn.init.uniform_(m.weight, a=4.43, b=0.5)
         m.bias.data.fill_(0)
         
 
@@ -213,7 +217,7 @@ class GraphConv(MessagePassing):
     def forward(self, m, edge_index, x):
         x = x if x.dim() == 2 else x.unsqueeze(-1)
         
-        mes = self.propagate(edge_index=edge_index, size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE), x=m, extra=x)
+        mes = self.propagate(edge_index=edge_index, size=((rows+cols) * BATCH_SIZE, edge_info, (rows+cols) * BATCH_SIZE), x=m, extra=x)
         
         return mes
             
@@ -231,16 +235,10 @@ class GNNI(torch.nn.Module):
         self.Nc = Nc
         self.ggc1 = GraphConv("source_to_target")
         self.ggc2 = GraphConv("target_to_source")
-        self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 128).double(),
+        self.mlp = torch.nn.Sequential(torch.nn.Linear(3, 128).double(),
                        torch.nn.Softplus(),
                        torch.nn.Linear(128, 1).double())
-        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(2, 16).double(),
-                       torch.nn.Softplus(),
-                       torch.nn.Linear(16, 16).double(),
-                       torch.nn.Softplus(),
-                       torch.nn.Linear(16, 1).double())
         self.mlp.apply(init_weights_2)
-        self.mlp1.apply(init_weights)
     
     def forward(self, data):
         '''
@@ -257,7 +255,7 @@ class GNNI(torch.nn.Module):
             m = self.ggc2(m, edge_index, x) + m_p
             
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
-        m = self.mlp(m).mul(self.mlp1(edge_index[0:2, :].double().t() / edge_index.max()))
+        m = self.mlp(torch.cat([m, edge_index[index].double().t()], dim=1))
         res = scatter_('add', m, edge_index[0], dim_size=size[0])
         
         idx = torch.LongTensor([x for x in range(rows)]).cuda()
