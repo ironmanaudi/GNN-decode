@@ -174,7 +174,6 @@ lr = 3e-4
 Nc = 5
 run1 = 40960
 run2 = 8192
-index = torch.LongTensor([1,0])
 adj = H.to_sparse()
 edge_info = torch.cat([adj._indices()[0].unsqueeze(0), \
                          adj._indices()[1].unsqueeze(0).add(H.size()[0])], dim=0).repeat(1, BATCH_SIZE).cuda()
@@ -192,6 +191,12 @@ logical, stab = logical.cuda(), stab.cuda()
 def init_weights(m):
     if type(m) == torch.nn.Linear:
         torch.nn.init.constant_(m.weight, 0.05755)
+        m.bias.data.fill_(1e-4)
+        
+        
+def init_weights1(m):
+    if type(m) == torch.nn.Linear:
+        torch.nn.init.constant_(m.weight, 0.05844)
         m.bias.data.fill_(1e-4)
 
 
@@ -229,13 +234,13 @@ class GraphConv(MessagePassing):
         if self.flow == 'target_to_source':
             return x
         else:
-            return x.mul(self.mlp(edge_info[index].double().t() / edge_info.max()))
+            return x.mul(self.mlp(edge_info[torch.LongTensor([1,0])].double().t() / edge_info.max()))
     
     def update(self, aggr_out, extra, edge_index):
         if self.flow == 'target_to_source':
             return aggr_out
         else:
-            return aggr_out + extra[edge_index[0]].mul(self.mlp1(edge_info[index].double().t() / edge_info.max()))
+            return aggr_out + extra[edge_index[0]].mul(self.mlp1(edge_info[torch.LongTensor([1,0])].double().t() / edge_info.max()))
         
     
 class GNNI(torch.nn.Module):
@@ -250,13 +255,13 @@ class GNNI(torch.nn.Module):
                        torch.nn.Linear(16, 16).double(),
                        torch.nn.Softplus(),
                        torch.nn.Linear(16, 1).double())
-        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(2, 16).double(),
+        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(1, 16).double(),
                        torch.nn.Softplus(),
                        torch.nn.Linear(16, 16).double(),
                        torch.nn.Softplus(),
                        torch.nn.Linear(16, 1).double())
         self.mlp.apply(init_weights)
-        self.mlp1.apply(init_weights)
+        self.mlp1.apply(init_weights1)
     
     def forward(self, data):
         '''
@@ -274,9 +279,9 @@ class GNNI(torch.nn.Module):
             idx = torch.cat([idx, torch.LongTensor([x for x in range(i, i+rows)]).cuda()], dim=0)
         
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
-        w = self.mlp(edge_info[index].double().t() / edge_info.max())
+        w = self.mlp(edge_info[torch.LongTensor([1,0])].double().t() / edge_info.max())
 #        print(w.t())
-        w1 = self.mlp1(edge_info[index].double().t() / edge_info.max())
+        w1 = self.mlp1(torch.Tensor([x for x in range(rows)]).repeat(1, BATCH_SIZE).double().t().cuda() / (rows -1))
         
         for i in range(self.Nc):
             m_p = m.clone()
