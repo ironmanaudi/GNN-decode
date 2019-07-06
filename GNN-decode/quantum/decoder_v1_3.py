@@ -185,7 +185,7 @@ logical, stab = logical.cuda(), stab.cuda()
 
 def init_weights(m):
     if type(m) == torch.nn.Linear:
-        torch.nn.init.constant_(m.weight, -0.01)
+        torch.nn.init.constant_(m.weight, 0.1)
         m.bias.data.fill_(1e-3)
 
 
@@ -207,17 +207,20 @@ class GraphConv(MessagePassing):
         super(GraphConv, self).__init__(aggr, flow)
         
         self.flow = flow
-        self.mlp = torch.nn.Sequential(torch.nn.Linear(3, 16).double(),
+        self.mlp = torch.nn.Sequential(torch.nn.BatchNorm1d(3).double(),
+                       torch.nn.Linear(3, 16).double(),
                        torch.nn.Softplus(),
+                       torch.nn.BatchNorm1d(16).double(),
                        torch.nn.Linear(16, 16).double(),
                        torch.nn.Softplus(),
+                       torch.nn.BatchNorm1d(16).double(),
                        torch.nn.Linear(16, 1).double())
         self.mlp.apply(init_weights)
         
     def forward(self, m, edge_index, x):
         x = x if x.dim() == 2 else x.unsqueeze(-1)
         
-        mes = self.propagate(edge_index=edge_index, size=((rows+cols) * BATCH_SIZE, edge_info, (rows+cols) * BATCH_SIZE), x=m, extra=x)
+        mes = self.propagate(edge_index, edge_info, size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE), x=m, extra=x)
         
         return mes
             
@@ -235,8 +238,10 @@ class GNNI(torch.nn.Module):
         self.Nc = Nc
         self.ggc1 = GraphConv("source_to_target")
         self.ggc2 = GraphConv("target_to_source")
-        self.mlp = torch.nn.Sequential(torch.nn.Linear(3, 128).double(),
+        self.mlp = torch.nn.Sequential(torch.nn.BatchNorm1d(3).double(),
+                       torch.nn.Linear(3, 128).double(),
                        torch.nn.Softplus(),
+                       torch.nn.BatchNorm1d(128).double(),
                        torch.nn.Linear(128, 1).double())
         self.mlp.apply(init_weights_2)
     
@@ -255,7 +260,7 @@ class GNNI(torch.nn.Module):
             m = self.ggc2(m, edge_index, x) + m_p
             
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
-        m = self.mlp(torch.cat([m, edge_index[index].double().t()], dim=1))
+        m = self.mlp(torch.cat([m, edge_info[index].double().t()], dim=1))
         res = scatter_('add', m, edge_index[0], dim_size=size[0])
         
         idx = torch.LongTensor([x for x in range(rows)]).cuda()
