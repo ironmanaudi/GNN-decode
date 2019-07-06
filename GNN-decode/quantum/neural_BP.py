@@ -92,15 +92,16 @@ class MessagePassing(torch.nn.Module):
 
         kwargs['edge_index'] = edge_index
         kwargs['size'] = size
+        kwargs['extra'] = extra
 
         for (idx, arg) in self.__special_args__:
             if arg[-2:] in ij.keys():
                 message_args.insert(idx, kwargs[arg[:-2]][ij[arg[-2:]]])
             else:
                 message_args.insert(idx, kwargs[arg])
-
+        
         update_args = [kwargs[arg] for arg in self.__update_args__]
-
+        
         out = self.message(*message_args)
         
         if self.flow == 'target_to_source':
@@ -120,7 +121,6 @@ class MessagePassing(torch.nn.Module):
             out = torch.log(1 + out) - torch.log(1 - out)
         else:
             out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
-            out = out + extra[edge_index[j]]
         
         out = self.update(out, *update_args)
 
@@ -210,22 +210,33 @@ class GraphConv(MessagePassing):
                        torch.nn.Linear(16, 16).double(),
                        torch.nn.Softplus(),
                        torch.nn.Linear(16, 1).double())
+        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(2, 16).double(),
+                       torch.nn.Softplus(),
+                       torch.nn.Linear(16, 16).double(),
+                       torch.nn.Softplus(),
+                       torch.nn.Linear(16, 1).double())
         self.mlp.apply(init_weights)
+        self.mlp1.apply(init_weights)
         
-    def forward(self, m, edge_index, x):
+    def forward(self, m, edge_index, x, idx):
         x = x if x.dim() == 2 else x.unsqueeze(-1)
         
-        mes = self.propagate(edge_index=edge_index, size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE), x=m, extra=x)
+        mes = self.propagate(edge_index=edge_index, extra=x, size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE), x=m)
         
         return mes
     
     def message(self, x, edge_index):
         if self.flow == 'target_to_source':
-#            print(self.mlp(edge_index.double().t()).t())
-            return x.mul(self.mlp(edge_info.double().t() / edge_info.max()))
+            return x
         else:
             return x.mul(self.mlp(edge_info[index].double().t() / edge_info.max()))
     
+    def update(self, aggr_out, extra, edge_index):
+        if self.flow == 'target_to_source':
+            return aggr_out
+        else:
+            return aggr_out + extra[edge_index[0]].mul(self.mlp1(edge_info[index].double().t() / edge_info.max()))
+        
     
 class GNNI(torch.nn.Module):
     def __init__(self, Nc):
@@ -251,21 +262,21 @@ class GNNI(torch.nn.Module):
         m = Variable(torch.zeros((edge_index.size()[1], 1), dtype = torch.float64), requires_grad=False).cuda()
         results = []
         
+        idx = torch.LongTensor([x for x in range(rows)]).cuda()
+        
+        for i in range(rows+cols, len(x), rows+cols):
+            idx = torch.cat([idx, torch.LongTensor([x for x in range(i, i+rows)]).cuda()], dim=0)
+        
         for i in range(self.Nc):
             m_p = m.clone()
-            m = self.ggc1(m, edge_index, x)
-            m = self.ggc2(m, edge_index, x) + m_p
+            m = self.ggc1(m, edge_index, x, idx)
+            m = self.ggc2(m, edge_index, x, idx) + m_p
             results.append(m)
             
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
         w = self.mlp(edge_info[index].double().t() / edge_info.max())
 #        print(w.t())
         m = m.mul(w)
-        
-        idx = torch.LongTensor([x for x in range(rows)]).cuda()
-        
-        for i in range(rows+cols, len(x), rows+cols):
-            idx = torch.cat([idx, torch.LongTensor([x for x in range(i, i+rows)]).cuda()], dim=0)
         
         for j in range(len(results)):
             results[j] = scatter_('add', results[j].clone(), edge_index[0], dim_size=size[0])
