@@ -250,7 +250,13 @@ class GNNI(torch.nn.Module):
                        torch.nn.Linear(16, 16).double(),
                        torch.nn.Softplus(),
                        torch.nn.Linear(16, 1).double())
+        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(2, 16).double(),
+                       torch.nn.Softplus(),
+                       torch.nn.Linear(16, 16).double(),
+                       torch.nn.Softplus(),
+                       torch.nn.Linear(16, 1).double())
         self.mlp.apply(init_weights)
+        self.mlp1.apply(init_weights)
     
     def forward(self, data):
         '''
@@ -267,20 +273,20 @@ class GNNI(torch.nn.Module):
         for i in range(rows+cols, len(x), rows+cols):
             idx = torch.cat([idx, torch.LongTensor([x for x in range(i, i+rows)]).cuda()], dim=0)
         
+        size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
+        w = self.mlp(edge_info[index].double().t() / edge_info.max())
+#        print(w.t())
+        w1 = self.mlp1(edge_info[index].double().t() / edge_info.max())
+        
         for i in range(self.Nc):
             m_p = m.clone()
             m = self.ggc1(m, edge_index, x, idx)
             m = self.ggc2(m, edge_index, x, idx) + m_p
-            results.append(m)
-            
-        size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
-        w = self.mlp(edge_info[index].double().t() / edge_info.max())
-#        print(w.t())
-        m = m.mul(w)
+            results.append(m.mul(w))
         
         for j in range(len(results)):
             results[j] = scatter_('add', results[j].clone(), edge_index[0], dim_size=size[0])
-            results[j] = results[j][idx].clone() + x[idx]
+            results[j] = results[j][idx].clone() + x[idx].mul(w1)
             results[j] = torch.sigmoid(-1 * results[j].clone())
         
         return results
