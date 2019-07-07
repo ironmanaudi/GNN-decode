@@ -266,8 +266,8 @@ class GNNI(torch.nn.Module):
     def _make_layer(self):
         layers = []
         for i in range(self.Nc):
-            layers.append(GraphConv("source_to_target"))
-            layers.append(GraphConv("target_to_source"))
+            layers.append(GraphConv("source_to_target").cuda())
+            layers.append(GraphConv("target_to_source").cuda())
             
         return layers
     
