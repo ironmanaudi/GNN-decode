@@ -170,8 +170,8 @@ H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
 h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep())
 BATCH_SIZE = 128
-lr = 3e-4
-Nc = 5
+lr = 1e-3
+Nc = 15
 run1 = 40960
 run2 = 8192
 adj = H.to_sparse()
@@ -248,8 +248,7 @@ class GNNI(torch.nn.Module):
         super(GNNI, self).__init__()
         
         self.Nc = Nc
-        self.ggc1 = GraphConv("source_to_target")
-        self.ggc2 = GraphConv("target_to_source")
+        self.layers = self._make_layer()
         self.mlp = torch.nn.Sequential(torch.nn.Linear(2, 16).double(),
                        torch.nn.Softplus(),
                        torch.nn.Linear(16, 16).double(),
@@ -260,8 +259,17 @@ class GNNI(torch.nn.Module):
                        torch.nn.Linear(16, 16).double(),
                        torch.nn.Softplus(),
                        torch.nn.Linear(16, 1).double())
+        self.weight = torch.nn.Parameter(Variable(torch.ones((1, 1), dtype = torch.float64)))
         self.mlp.apply(init_weights)
         self.mlp1.apply(init_weights1)
+    
+    def _make_layer(self):
+        layers = []
+        for i in range(self.Nc):
+            layers.append(GraphConv("source_to_target"))
+            layers.append(GraphConv("target_to_source"))
+            
+        return layers
     
     def forward(self, data):
         '''
@@ -282,11 +290,11 @@ class GNNI(torch.nn.Module):
         w = self.mlp(edge_info[torch.LongTensor([1,0])].double().t() / edge_info.max())
 #        print(w.t())
         w1 = self.mlp1(torch.Tensor([x for x in range(rows)]).repeat(1, BATCH_SIZE).double().t().cuda() / (rows -1))
-        
-        for i in range(self.Nc):
+#        print(w1.t())
+        for i in range(0, len(self.layers), 2):
             m_p = m.clone()
-            m = self.ggc1(m, edge_index, x, idx)
-            m = self.ggc2(m, edge_index, x, idx) + m_p
+            m = self.layers[i](m, edge_index, x, idx)
+            m = self.layers[i+1](m, edge_index, x, idx) + torch.matmul(m_p, self.weight)
             results.append(m.mul(w))
         
         for j in range(len(results)):
@@ -320,9 +328,10 @@ class LossFunc(torch.nn.Module):
             for i in range(self.a, len(y), self.a):
                 res = torch.cat([res, preds[j][i : i+self.a].clone()], dim=1)
             
-            loss += abs(torch.sin(torch.matmul(self.H_prep, tmp + res) * math.pi / 2)).sum()
+            loss = loss + abs(torch.sin(torch.matmul(H.t().cuda(), tmp + res) * math.pi / 2)).sum() + \
+            abs(torch.sin(torch.matmul(H.t().cuda(), tmp + res) * math.pi / 2)).sum()
 
-        return loss
+        return loss / len(preds)
     
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -365,7 +374,7 @@ def test(decoder_a):
         
         loss += criterion(pred, datas.y, train=0).item()
         
-    return loss / (run2 * 2 * L ** 2)
+    return loss / (run2 * L ** 2)
 #    return loss / run2
 
 
@@ -392,7 +401,7 @@ if __name__ == '__main__':
     if load:
         f = open('./test_loss_for_trained_model.txt','a')
         decoder_b = GNNI(Nc).to(device)
-        decoder_b.load_state_dict(torch.load('./neural_BP/decoder_parameters_epoch.pkl'))
+        decoder_b.load_state_dict(torch.load('./neural_BP/decoder_parameters_epoch96.pkl'))
         
         loss = test(decoder_b)
         print(loss)
