@@ -131,9 +131,9 @@ class MessagePassing(torch.nn.Module):
         
         if self.flow == 'target_to_source':
             out = torch.tanh(out / 2)
-            out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
+            out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])#[edge_index[j]] - out
         else:
-            out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
+            out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])#[edge_index[j]] - out
         
         if self.flow == 'source_to_target':
             out = out + extra[edge_index[j]]
@@ -189,8 +189,8 @@ H_prep = torch.from_numpy(h_prep.get_H_Prep())
 BATCH_SIZE = 128
 lr = 3e-4
 Nc = 15
-run1 = 2048#81920
-run2 = 256#8192
+run1 = 81920
+run2 = 8192
 dataset1 = error_generate.gen_syn(P1, L, H, run1)
 dataset2 = error_generate.gen_syn(P2, L, H, run2)
 train_dataset = CustomDataset(H, dataset1)
@@ -208,7 +208,7 @@ def init_weights(m):
 #        torch.nn.init.constant_(m.weight, -0.1)
         torch.nn.init.uniform_(m.weight, a=0.1, b=1)
 #        torch.nn.init.constant_(m.weight, -1)
-        m.bias.data.fill_(1e-2)
+        m.bias.data.fill_(1e-3)
         
         
 def init_weights_p(m):
@@ -216,15 +216,15 @@ def init_weights_p(m):
 #        torch.nn.init.constant_(m.weight, 0.1)
         torch.nn.init.uniform_(m.weight, a=-0.1, b=1)
 #        torch.nn.init.uniform_(m.weight, a=0.1, b=0.5)
-        m.bias.data.fill_(1e-2)
+        m.bias.data.fill_(1e-3)
         
         
 def init_weights_2(m):
     if type(m) == torch.nn.Linear:
 #        torch.nn.init.constant_(m.weight, -0.01)
-        torch.nn.init.uniform_(m.weight, a=1e-3, b=1)
+        torch.nn.init.uniform_(m.weight, a=0.1, b=0.1)
 #        torch.nn.init.uniform_(m.weight, a=4, b=0.5)
-        m.bias.data.fill_(1e-2)
+        m.bias.data.fill_(0)
 
 
 def a_p(grad):
@@ -233,14 +233,17 @@ def a_p(grad):
     
 
 class GraphConv(MessagePassing):
-    def __init__(self, flow, aggr='add', bias=True):
+    def __init__(self, flow, aggr='mean', bias=True):
         super(GraphConv, self).__init__(aggr, flow)
         
         self.flow = flow
-        self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 16).double(),
+        self.mlp = torch.nn.Sequential(torch.nn.BatchNorm1d(1).double(),
+                           torch.nn.Linear(1, 16).double(),
                            torch.nn.Softplus(),
+                           torch.nn.BatchNorm1d(16).double(),
                            torch.nn.Linear(16, 16).double(),
                            torch.nn.Softplus(),
+                           torch.nn.BatchNorm1d(16).double(),
                            torch.nn.Linear(16, 1).double())
         
         if self.flow == 'target_to_source':self.mlp.apply(init_weights)
@@ -274,9 +277,11 @@ class GNNI(torch.nn.Module):
         self.Nc = Nc
         self.ggc1 = GraphConv("source_to_target")
         self.ggc2 = GraphConv("target_to_source")
-        self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 128).double(),
-                       torch.nn.Softplus(),
-                       torch.nn.Linear(128, 1).double())
+        self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 16).double(),
+                           torch.nn.Softplus(),
+                           torch.nn.Linear(16, 16).double(),
+                           torch.nn.Softplus(),
+                           torch.nn.Linear(16, 1).double())
         self.mlp.apply(init_weights_2)
     
     def forward(self, data):
@@ -298,7 +303,7 @@ class GNNI(torch.nn.Module):
         for i in range(rows+cols, len(x), rows+cols):
             idx = torch.cat([idx, torch.LongTensor([x for x in range(i, i+rows)]).cuda()], dim=0)
         
-        res = self.mlp(scatter_('add', m, edge_index[0], dim_size=size[0])[idx].clone()) + x[idx]
+        res = self.mlp(scatter_('add', m, edge_index[0], dim_size=size[0])[idx].clone())
         
         res = torch.sigmoid(-1 * res)
 #        res = torch.clamp(res, 1e-10, 1-1e-1)
@@ -324,7 +329,7 @@ class LossFunc(torch.nn.Module):
             res = torch.cat([res, pred[i : i+self.a]], dim=1)
             
 #        loss_a = torch.matmul(self.H_prep, res + tmp)
-        loss = abs(torch.sin(torch.matmul(H.t().cuda(), tmp + res) * math.pi / 2)).sum() #+ \
+        loss = abs(torch.sin(torch.matmul(H.t().cuda(), tmp + res) * math.pi / 2)) #+ \
 #            abs(torch.sin(torch.matmul(logical, tmp + res) * math.pi / 2)).sum()
 #        loss_a = torch.matmul(logical, tmp + res)
 #        loss = -1 * (1 - tmp).mul(torch.log(1 - res)) - tmp.mul(torch.log(res))
