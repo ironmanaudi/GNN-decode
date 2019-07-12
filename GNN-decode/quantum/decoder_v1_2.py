@@ -18,7 +18,6 @@ from torch_geometric.utils import scatter_
 import torch.nn.functional as F
 from torch_geometric.data import DataLoader
 import error_generate
-import decoder_v2_4
 '''
 adding graph-tolology-awareness attribute explicitly by attatching learnable weight to each message to build a nueral BP covering 
 algorithm
@@ -105,15 +104,28 @@ class MessagePassing(torch.nn.Module):
         out = self.message(*message_args)
         
         if self.flow == 'target_to_source':
+            out = torch.clamp(out, -10, 10)
             out = torch.tanh(out / 2)
+            Coeff = torch.where(out < 0, torch.ones(out.size(), dtype=torch.float64).cuda(), \
+                                torch.zeros(out.size(), dtype=torch.float64).cuda())
+            out = abs(out)
+            out = torch.clamp(out, 1e-20, 1e10)
+            out = torch.log(out)
             out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
+            
+            Coeff = scatter_(self.aggr, Coeff, edge_index[j], dim_size=size[i])[edge_index[j]] - Coeff
+            Coeff = torch.cos(math.pi * (Coeff + (1 - extra[edge_index[j]]) / 2))
+            out = torch.exp(out).mul(Coeff)
+            out = torch.clamp(out, -1+1e-12, 1-1e-12)
+            out = torch.log(1 + out) - torch.log(1 - out)
         else:
             out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
         
         if self.flow == 'source_to_target':
-            out = out + extra[edge_index[j]]
-        else:
+#            out = out + extra[edge_index[j]]
             out = torch.cat([out, extra[edge_index[j]]], dim=1)
+#        else:
+#            out = torch.cat([out, extra[edge_index[j]]], dim=1)
             
         out = self.update(out, *update_args)
 
@@ -155,17 +167,17 @@ class CustomDataset(InMemoryDataset):
         return '{}()'.format(self.__class__.__name__) 
 
 
-L = 4
-P1 = [0.01,0.02,0.03,0.04,0.05,0.06,0.07,0.08,0.09,0.1]
+L = 6
+P1 = [0.01,0.02,0.03,0.04,0.05,0.06,0.07,0.08,0.09,0.1] #
 P2 = [0.01]
 H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
 h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep())
 BATCH_SIZE = 128
-lr = 1e-3
-Nc = 10
-run1 = 40960
-run2 = 8192
+lr = 3e-4
+Nc = 15
+run1 = 256#40960
+run2 = 128#8192
 index = torch.LongTensor([1,0])
 adj = H.to_sparse()
 edge_info = torch.cat([adj._indices()[0].unsqueeze(0), \
@@ -186,6 +198,12 @@ def init_weights(m):
         torch.nn.init.constant_(m.weight, 0.05755)
         m.bias.data.fill_(1e-4)
         
+        
+def init_weights_2(m):
+    if type(m) == torch.nn.Linear:
+        torch.nn.init.constant_(m.weight, 0.05755)
+        m.bias.data.fill_(1e-4)
+        
 
 def a_p(grad):
     a = torch.where(abs(grad) < 1e-1, torch.ones(grad.size()).cuda(), torch.zeros(grad.size()).cuda())
@@ -197,23 +215,15 @@ class GraphConv(MessagePassing):
         super(GraphConv, self).__init__(aggr, flow)
         
         self.flow = flow
-        self.mlp1 = torch.nn.Sequential(#torch.nn.BatchNorm1d(2).double(),
-                       torch.nn.Linear(2, 16).double(),
-                       torch.nn.Softplus(),
-                       torch.nn.Linear(16, 16).double(),
-                       torch.nn.Softplus(),
-                       torch.nn.Linear(16, 1).double())
-        self.mlp1.apply(init_weights)
-        
-        if self.flow == 'target_to_source':
-            self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 16).double(),
+        if self.flow == 'source_to_target':
+            self.mlp = torch.nn.Sequential(torch.nn.Linear(2, 16).double(),
                            torch.nn.Softplus(),
                            torch.nn.Linear(16, 16).double(),
                            torch.nn.Softplus(),
                            torch.nn.Linear(16, 1).double())
-            
-            for param in self.mlp.parameters():
-                param.requires_grad = False
+            self.mlp.apply(init_weights)
+#            for param in self.mlp.parameters():
+#                param.requires_grad = False
 #            self.mlp.apply(init_weights)
         
     def forward(self, m, edge_index, x):
@@ -222,17 +232,10 @@ class GraphConv(MessagePassing):
         mes = self.propagate(edge_index=edge_index, size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE), x=m, extra=x)
         
         return mes
-    
-    def message(self, x, edge_index):
-        if self.flow == 'target_to_source':
-#            print(self.mlp1(edge_info.double().t() / edge_info.max()))
-            return x.mul(self.mlp1(edge_info.double().t() / edge_info.max()))
-        else:
-            return x.mul(self.mlp1(edge_info[index].double().t() / edge_info.max()))
             
     def update(self, aggr_out):
-        if self.flow == 'target_to_source':
-            return self.mlp(aggr_out[:, 0].clone().unsqueeze(1)).mul(aggr_out[:, 1].clone().unsqueeze(1))
+        if self.flow == 'source_to_target':
+            return self.mlp(aggr_out)
         else:
             return aggr_out
     
@@ -247,18 +250,17 @@ class GNNI(torch.nn.Module):
         self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 128).double(),
                        torch.nn.Softplus(),
                        torch.nn.Linear(128, 1).double())
-        
-        for param in self.mlp.parameters():
-            param.requires_grad = False
+        self.mlp.apply(init_weights_2)
+#        for param in self.mlp.parameters():
+#            param.requires_grad = False
     
     def forward(self, data):
         '''
         this part need to sum up the message and return
         '''
         x = data.x
-        edge_index = torch.cat([data.edge_index[0].clone().unsqueeze(0), \
-                                data.edge_index[1].clone().unsqueeze(0).add(rows)], dim=0)
-        m = Variable(torch.zeros((edge_index.size()[1], 1), dtype = torch.float64), requires_grad=False).cuda()
+        edge_index = torch.cat([data.edge_index[0].clone().unsqueeze(0), data.edge_index[1].clone().unsqueeze(0).add(rows)], dim=0)
+        m = Variable(torch.zeros((edge_index.size()[1], 1), dtype = torch.float64).cuda(), requires_grad=False)
         
         for i in range(self.Nc):
             m_p = m.clone()
@@ -266,14 +268,15 @@ class GNNI(torch.nn.Module):
             m = self.ggc2(m, edge_index, x) + m_p
         
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
-        res = scatter_('add', m, edge_index[0], dim_size=size[0]) + x
-        tmp = res[0 : rows].clone()
+        idx = torch.LongTensor([x for x in range(rows)]).cuda()
         
-        for i in range(rows+cols, len(res), rows+cols):
-            tmp = torch.cat([tmp, res[i : i+rows].clone()], dim=0)
-            
-        res = self.mlp(tmp)
+        for i in range(rows+cols, len(x), rows+cols):
+            idx = torch.cat([idx, torch.LongTensor([x for x in range(i, i+rows)]).cuda()], dim=0)
+        
+        res = self.mlp(scatter_('add', m, edge_index[0], dim_size=size[0])[idx].clone()) + x[idx]
+        
         res = torch.sigmoid(-1 * res)
+#        res = torch.clamp(res, 1e-10, 1-1e-1)
         
         return res
 
@@ -293,7 +296,7 @@ class LossFunc(torch.nn.Module):
             tmp = torch.cat([tmp, datas.y[i : i+self.a].clone()], dim=1)
             res = torch.cat([res, pred[i : i+self.a].clone()], dim=1)
               
-        loss_p = torch.matmul(self.H_prep, tmp + res)
+        loss_p = torch.matmul(H.t().cuda(), tmp + res)
 #        loss_p = torch.matmul(logical, tmp + res)
         loss = abs(torch.sin(loss_p * math.pi / 2)).sum()
         
@@ -305,17 +308,6 @@ decoder = GNNI(Nc).to(device)
 #decoder.load_state_dict(torch.load('./model2/decoder_parameters_epoch60.pkl'))
 optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, decoder.parameters()), lr, weight_decay=1e-9)
 criterion = LossFunc(H, H_prep)
-
-'''
-load pretrained model v2_4
-'''
-model_pretrained = decoder_v2_4.GNNI(Nc).to(device)
-model_pretrained.load_state_dict(torch.load('./model/decoder_parameters_epoch384.pkl'))
-decoder_dict = decoder.state_dict()
-pretrained_dict = model_pretrained.state_dict()
-pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in decoder_dict}
-decoder_dict.update(pretrained_dict)
-decoder.load_state_dict(decoder_dict)
 
 
 def train(epoch):
