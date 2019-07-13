@@ -104,7 +104,7 @@ class MessagePassing(torch.nn.Module):
         out = self.message(*message_args)
         
         if self.flow == 'target_to_source':
-            out = torch.clamp(out, -10, 10)
+#            out = torch.clamp(out, -10, 10)
             out = torch.tanh(out / 2)
             Coeff = torch.where(out < 0, torch.ones(out.size(), dtype=torch.float64).cuda(), \
                                 torch.zeros(out.size(), dtype=torch.float64).cuda())
@@ -176,8 +176,8 @@ H_prep = torch.from_numpy(h_prep.get_H_Prep())
 BATCH_SIZE = 128
 lr = 3e-4
 Nc = 15
-run1 = 256#40960
-run2 = 128#8192
+run1 = 40960
+run2 = 2048
 index = torch.LongTensor([1,0])
 adj = H.to_sparse()
 edge_info = torch.cat([adj._indices()[0].unsqueeze(0), \
@@ -195,13 +195,15 @@ logical, stab = logical.cuda(), stab.cuda()
 
 def init_weights(m):
     if type(m) == torch.nn.Linear:
-        torch.nn.init.constant_(m.weight, 0.05755)
+#        torch.nn.init.constant_(m.weight, 0.05755)
+        torch.nn.init.kaiming_normal_(m.weight, a=0, mode='fan_in')
         m.bias.data.fill_(1e-4)
         
         
 def init_weights_2(m):
     if type(m) == torch.nn.Linear:
-        torch.nn.init.constant_(m.weight, 0.05755)
+#        torch.nn.init.constant_(m.weight, 0.05755)
+        torch.nn.init.kaiming_normal_(m.weight, a=0, mode='fan_in')
         m.bias.data.fill_(1e-4)
         
 
@@ -247,12 +249,10 @@ class GNNI(torch.nn.Module):
         self.Nc = Nc
         self.ggc1 = GraphConv("source_to_target")
         self.ggc2 = GraphConv("target_to_source")
-        self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 128).double(),
+        self.mlp = torch.nn.Sequential(torch.nn.Linear(2, 256).double(),
                        torch.nn.Softplus(),
-                       torch.nn.Linear(128, 1).double())
+                       torch.nn.Linear(256, 1).double())
         self.mlp.apply(init_weights_2)
-#        for param in self.mlp.parameters():
-#            param.requires_grad = False
     
     def forward(self, data):
         '''
@@ -273,10 +273,8 @@ class GNNI(torch.nn.Module):
         for i in range(rows+cols, len(x), rows+cols):
             idx = torch.cat([idx, torch.LongTensor([x for x in range(i, i+rows)]).cuda()], dim=0)
         
-        res = self.mlp(scatter_('add', m, edge_index[0], dim_size=size[0])[idx].clone()) + x[idx]
-        
-        res = torch.sigmoid(-1 * res)
-#        res = torch.clamp(res, 1e-10, 1-1e-1)
+        res = torch.cat([scatter_('add', m, edge_index[0], dim_size=size[0])[idx].clone(), x[idx]], dim=1)
+        res = torch.sigmoid(-1 * self.mlp(res))
         
         return res
 
@@ -289,23 +287,28 @@ class LossFunc(torch.nn.Module):
         self.H_prep = H_prep.cuda()
         
     def forward(self, pred, datas):
+#        print(pred.t(), datas.y.t())
+#        print(((pred+datas.y)%2).sum())
         tmp = datas.y[0 : self.a].clone()
         res = pred[0 : self.a].clone()
         
         for i in range(self.a, len(datas.y), self.a):
             tmp = torch.cat([tmp, datas.y[i : i+self.a].clone()], dim=1)
-            res = torch.cat([res, pred[i : i+self.a].clone()], dim=1)
-              
-        loss_p = torch.matmul(H.t().cuda(), tmp + res)
-#        loss_p = torch.matmul(logical, tmp + res)
-        loss = abs(torch.sin(loss_p * math.pi / 2)).sum()
+            res = torch.cat([res, pred[i : i+self.a]], dim=1)
+            
+#        loss_a = torch.matmul(self.H_prep, res + tmp)
+        loss = abs(torch.sin(torch.matmul(H.t().cuda(), tmp + res) * math.pi / 2)) + \
+            abs(torch.sin(torch.matmul(logical, tmp + res) * math.pi / 2)).sum()
+#        loss_a = torch.matmul(logical, tmp + res)
+#        loss = -1 * (1 - tmp).mul(torch.log(1 - res)) - tmp.mul(torch.log(res))
+#        loss = abs(torch.sin(loss_a * math.pi / 2))
         
-        return loss
+        return loss#.sum()
     
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 decoder = GNNI(Nc).to(device)
-#decoder.load_state_dict(torch.load('./model2/decoder_parameters_epoch60.pkl'))
+#decoder.load_state_dict(torch.load('./model1_2/decoder_parameters_epoch20.pkl'))
 optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, decoder.parameters()), lr, weight_decay=1e-9)
 criterion = LossFunc(H, H_prep)
 
@@ -322,14 +325,12 @@ def train(epoch):
         
 #        for p in decoder.parameters():
 #            print(p.grad.sum().item())
-#        torch.nn.utils.clip_grad_norm_(decoder.parameters(), 0.65)
         
         optimizer.step()
-    
-    f.write(' %.15f ' % (loss.item()))
-    
-    if epoch % 6 == 0:
-        torch.save(decoder.state_dict(), './model1_2/decoder_parameters_epoch%d.pkl' % (epoch))
+        
+    if epoch % 1 == 0:
+        f.write(' %.15f ' % (loss.item()))
+        torch.save(decoder.state_dict(), './new_model/decoder_parameters_epoch%d.pkl' % (epoch))
         
     f.close()
     
