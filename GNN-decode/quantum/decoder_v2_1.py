@@ -20,7 +20,7 @@ from torch_geometric.data import DataLoader
 import error_generate
 import torch_scatter
 from torch_scatter import scatter_add
-import QGNNI
+import torch.nn.init as weight_init
 '''
 PDP version of decoder with neural-BP-like structure-awareness
 '''
@@ -206,8 +206,8 @@ H_prep = torch.from_numpy(h_prep.get_H_Prep())
 BATCH_SIZE = 128
 lr = 5e-4
 Nc = 15
-run1 = 40960
-run2 = 2048
+run1 = 2048#40960
+run2 = 512#2048
 dataset1 = error_generate.gen_syn(P1, L, H, run1)
 dataset2 = error_generate.gen_syn(P2, L, H, run2)
 train_dataset = CustomDataset(H, dataset1)
@@ -264,6 +264,10 @@ class GraphConv(MessagePassing):
             self.mlp.apply(init_weights)
         self.rnn = torch.nn.GRUCell(1, 1, bias=bias).double()
         
+        for name, param in self.rnn.named_parameters(): 
+              weight_init.normal_(param)
+#              dict[name] = param
+        
     def forward(self, m, edge_index, x, prev=None):
         x = x if x.dim() == 2 else x.unsqueeze(-1)
         
@@ -314,7 +318,7 @@ class GNNI(torch.nn.Module):
             m_p = m.clone()
             m = self.ggc1(m, edge_index, x, prev_a)
             prev_a = m.clone()
-            m = self.ggc2(m, edge_index, x, prev_b) + m_p
+            m = self.ggc2(m, edge_index, x, prev_b)# + m_p
             prev_b = m.clone()
             
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
