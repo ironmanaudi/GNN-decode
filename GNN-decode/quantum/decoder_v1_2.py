@@ -116,7 +116,7 @@ class MessagePassing(torch.nn.Module):
             Coeff = scatter_(self.aggr, Coeff, edge_index[j], dim_size=size[i])[edge_index[j]] - Coeff
             Coeff = torch.cos(math.pi * (Coeff + (1 - extra[edge_index[j]]) / 2))
             out = torch.exp(out).mul(Coeff)
-            out = torch.clamp(out, -1+1e-12, 1-1e-12)
+            out = torch.clamp(out, -1+1e-15, 1-1e-15)
             out = torch.log(1 + out) - torch.log(1 - out)
         else:
             out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
@@ -168,7 +168,7 @@ class CustomDataset(InMemoryDataset):
 
 
 L = 5
-P1 = [0.01,0.02,0.03,0.04,0.05,0.06,0.07,0.08,0.09,0.1] #
+P1 = [0.01,0.02,0.03,0.04,0.05,0.06,0.07,0.08,0.09,0.1]
 P2 = [0.01]
 H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
 h_prep = error_generate.H_Prep(H.t())
@@ -176,8 +176,8 @@ H_prep = torch.from_numpy(h_prep.get_H_Prep())
 BATCH_SIZE = 128
 lr = 3e-4
 Nc = 15
-run1 = 2048#40960
-run2 = 256#2048
+run1 = 40960
+run2 = 2048
 index = torch.LongTensor([1,0])
 adj = H.to_sparse()
 edge_info = torch.cat([adj._indices()[0].unsqueeze(0), \
@@ -195,14 +195,12 @@ logical, stab = logical.cuda(), stab.cuda()
 
 def init_weights(m):
     if type(m) == torch.nn.Linear:
-#        torch.nn.init.constant_(m.weight, 0.05755)
         torch.nn.init.kaiming_normal_(m.weight, a=0, mode='fan_in')
         m.bias.data.fill_(0)
         
         
 def init_weights_2(m):
     if type(m) == torch.nn.Linear:
-#        torch.nn.init.constant_(m.weight, 0.05755)
         torch.nn.init.kaiming_normal_(m.weight, a=0, mode='fan_in')
         m.bias.data.fill_(0)
         
@@ -218,21 +216,31 @@ class GraphConv(MessagePassing):
         
         self.flow = flow
         if self.flow == 'source_to_target':
-            self.mlp = torch.nn.Sequential(torch.nn.Linear(2, 256).double(),
-                       torch.nn.Tanh(),
+            self.mlp = torch.nn.Sequential(#torch.nn.BatchNorm1d(3).double(),
+                       torch.nn.Linear(3, 256).double(),
+                       torch.nn.Softplus(),
                        torch.nn.Linear(256, 1).double())
-            self.mlp.apply(init_weights)
+#            self.mlp.apply(init_weights)
+            self.mlp1 = torch.nn.Sequential(#torch.nn.BatchNorm1d(3).double(),
+                       torch.nn.Linear(3, 256).double(),
+                       torch.nn.Softplus(),
+                       torch.nn.Linear(256, 1).double())
+#            self.mlp1.apply(init_weights)
         
     def forward(self, m, edge_index, x):
         x = x if x.dim() == 2 else x.unsqueeze(-1)
         
+        if self.flow == 'source_to_target':
+            m = self.mlp1(torch.cat([m, edge_info.t().double() / edge_info.max()], dim=1))
+            
         mes = self.propagate(edge_index=edge_index, size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE), x=m, extra=x)
         
         return mes
             
     def update(self, aggr_out):
         if self.flow == 'source_to_target':
-            return self.mlp(aggr_out)
+            return self.mlp(torch.cat([aggr_out[:, 1].clone().unsqueeze(1), \
+                                       edge_info.t().double() / edge_info.max()], dim=1)) + aggr_out[:, 0].clone().unsqueeze(1)
         else:
             return aggr_out
     
@@ -244,10 +252,10 @@ class GNNI(torch.nn.Module):
         self.Nc = Nc
         self.ggc1 = GraphConv("source_to_target")
         self.ggc2 = GraphConv("target_to_source")
-        self.mlp = torch.nn.Sequential(torch.nn.Linear(2, 256).double(),
-                       torch.nn.Tanh(),
+        self.mlp = torch.nn.Sequential(torch.nn.Linear(3, 256).double(),
+                       torch.nn.Softplus(),
                        torch.nn.Linear(256, 1).double())
-        self.mlp.apply(init_weights_2)
+#        self.mlp.apply(init_weights_2)
     
     def forward(self, data):
         '''
@@ -262,14 +270,16 @@ class GNNI(torch.nn.Module):
             m = self.ggc1(m, edge_index, x)
             m = self.ggc2(m, edge_index, x) + m_p
         
+        m = self.mlp(torch.cat([m, edge_info.t().double() / edge_info.max()], dim=1))
+        
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
         idx = torch.LongTensor([x for x in range(rows)]).cuda()
         
         for i in range(rows+cols, len(x), rows+cols):
             idx = torch.cat([idx, torch.LongTensor([x for x in range(i, i+rows)]).cuda()], dim=0)
         
-        res = torch.cat([scatter_('add', m, edge_index[0], dim_size=size[0])[idx].clone(), x[idx]], dim=1)
-        res = torch.sigmoid(-1 * self.mlp(res))
+        res = scatter_('add', m, edge_index[0], dim_size=size[0])[idx].clone()
+        res = torch.sigmoid(-1 * res)
         
         return res
 
@@ -282,8 +292,8 @@ class LossFunc(torch.nn.Module):
         self.H_prep = H_prep.cuda()
         
     def forward(self, pred, datas):
-#        print(pred.t(), datas.y.t())
-#        print(((pred+datas.y)%2).sum())
+#        print(pred.t())
+#        print(datas.y.t())
         tmp = datas.y[0 : self.a].clone()
         res = pred[0 : self.a].clone()
         
@@ -299,7 +309,7 @@ class LossFunc(torch.nn.Module):
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 decoder = GNNI(Nc).to(device)
-#decoder.load_state_dict(torch.load('./model1_2/decoder_parameters_epoch1.pkl'))
+decoder.load_state_dict(torch.load('./model1_2/decoder_parameters_epoch1.pkl'))
 optimizer = torch.optim.Adam(decoder.parameters(), lr, weight_decay=1e-9)
 criterion = LossFunc(H, H_prep)
 
@@ -364,7 +374,7 @@ if __name__ == '__main__':
     if load:
         f = open('./test_loss_for_trained_model.txt','a')
         decoder_b = GNNI(Nc).to(device)
-        decoder_b.load_state_dict(torch.load('./model1_2/decoder_parameters_epoch24.pkl'))
+        decoder_b.load_state_dict(torch.load('./model1_2/decoder_parameters_epoch50.pkl'))
         
         loss = test(decoder_b)
         print(loss)
