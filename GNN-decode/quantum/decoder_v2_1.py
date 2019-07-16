@@ -133,20 +133,8 @@ class MessagePassing(torch.nn.Module):
         out = self.message(*message_args)
         
         if self.flow == 'target_to_source':
-#            out = torch.clamp(out, -10, 10)
             out = torch.tanh(out / 2)
-            Coeff = torch.where(out < 0, torch.ones(out.size(), dtype=torch.float64).cuda(), \
-                                torch.zeros(out.size(), dtype=torch.float64).cuda())
-            out = abs(out)
-            out = torch.clamp(out, 1e-20, 1e10)
-            out = torch.log(out)
             out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
-            
-            Coeff = scatter_(self.aggr, Coeff, edge_index[j], dim_size=size[i])[edge_index[j]] - Coeff
-            Coeff = torch.cos(math.pi * (Coeff + (1 - extra[edge_index[j]]) / 2))
-            out = torch.exp(out).mul(Coeff)
-            out = torch.clamp(out, -1+1e-12, 1-1e-12)
-            out = torch.log(1 + out) - torch.log(1 - out)
         else:
             out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
         
@@ -208,6 +196,9 @@ lr = 5e-4
 Nc = 15
 run1 = 2048#40960
 run2 = 512#2048
+adj = H.to_sparse()
+edge_info = torch.cat([adj._indices()[0].unsqueeze(0), \
+                         adj._indices()[1].unsqueeze(0).add(H.size()[0])], dim=0).repeat(1, BATCH_SIZE).cuda()
 dataset1 = error_generate.gen_syn(P1, L, H, run1)
 dataset2 = error_generate.gen_syn(P2, L, H, run2)
 train_dataset = CustomDataset(H, dataset1)
@@ -252,26 +243,31 @@ class GraphConv(MessagePassing):
         super(GraphConv, self).__init__(aggr, flow)
         
         self.flow = flow
-        self.mlp1 = torch.nn.Sequential(torch.nn.Linear(1, 256).double(),
+        self.mlp = torch.nn.Sequential(torch.nn.Linear(3, 256).double(),
                        torch.nn.Tanh(),
                        torch.nn.Linear(256, 1).double())
+        self.mlp.apply(init_weights)
+        if self.flow == 'source_to_target':
+            self.mlp1 = torch.nn.Sequential(torch.nn.Linear(2, 256).double(),
+                           torch.nn.Tanh(),
+                           torch.nn.Linear(256, 1).double())
+        else:
+            self.mlp1 = torch.nn.Sequential(torch.nn.Linear(1, 256).double(),
+                           torch.nn.Tanh(),
+                           torch.nn.Linear(256, 1).double())
         self.mlp1.apply(init_weights_2)
         
-        if self.flow == 'source_to_target':
-            self.mlp = torch.nn.Sequential(torch.nn.Linear(2, 256).double(),
-                       torch.nn.Tanh(),
-                       torch.nn.Linear(256, 1).double())
-            self.mlp.apply(init_weights)
         self.rnn = torch.nn.GRUCell(1, 1, bias=bias).double()
         
-        for name, param in self.rnn.named_parameters(): 
-              weight_init.normal_(param)
-#              dict[name] = param
+#        for name, param in self.rnn.named_parameters(): 
+#              weight_init.normal_(param)
         
     def forward(self, m, edge_index, x, prev=None):
         x = x if x.dim() == 2 else x.unsqueeze(-1)
         
-        m = self.mlp1(m)
+        if self.flow == 'source_to_target':m = self.mlp(torch.cat([m, edge_info.t().double()], dim=1))
+        else:m = self.mlp(torch.cat([m, edge_info[torch.LongTensor([1,0])].t().double()], dim=1))
+            
         m = self.propagate(edge_index=edge_index, size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE), x=m, extra=x)
         
         if prev is not None:
@@ -281,9 +277,10 @@ class GraphConv(MessagePassing):
             
     def update(self, aggr_out):
         if self.flow == 'source_to_target':
-            return self.mlp(aggr_out)
+            priori = self.mlp1(torch.cat([edge_info[0].unsqueeze(0).t().double(), aggr_out[:, 1].clone().unsqueeze(1)] ,dim=1))
+            return priori + aggr_out[:, 0].clone().unsqueeze(1)
         else:
-            return aggr_out
+            return self.mlp1(aggr_out)
     
 class GNNI(torch.nn.Module):
     def __init__(self, Nc):
@@ -292,10 +289,16 @@ class GNNI(torch.nn.Module):
         self.Nc = Nc
         self.ggc1 = GraphConv("source_to_target")
         self.ggc2 = GraphConv("target_to_source")
-        self.mlp = torch.nn.Sequential(torch.nn.Linear(2, 256).double(),
-                       torch.nn.Tanh(),
+        self.mlp = torch.nn.Sequential(#torch.nn.BatchNorm1d(3).double(),
+                       torch.nn.Linear(3, 256).double(),
+                       torch.nn.Softplus(),
                        torch.nn.Linear(256, 1).double())
-        self.mlp.apply(init_weights_p)
+        self.mlp1 = torch.nn.Sequential(#torch.nn.BatchNorm1d(1).double(),
+                       torch.nn.Linear(2, 256).double(),
+                       torch.nn.Softplus(),
+                       torch.nn.Linear(256, 1).double())
+        self.mlp.apply(init_weights_2)
+        self.mlp1.apply(init_weights_2)
     
     def forward(self, data):
         '''
@@ -309,6 +312,8 @@ class GNNI(torch.nn.Module):
         prev_a = m.clone()
         m = self.ggc2(m, edge_index, x)
         prev_b = m.clone()
+        
+        size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
         idx = torch.LongTensor([x for x in range(rows)]).cuda()
         
         for i in range(rows+cols, len(x), rows+cols):
@@ -321,9 +326,12 @@ class GNNI(torch.nn.Module):
             m = self.ggc2(m, edge_index, x, prev_b)# + m_p
             prev_b = m.clone()
             
-        size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
-        res = torch.cat([scatter_('add', m, edge_index[0], dim_size=size[0])[idx].clone(), x[idx]], dim=1)
-        res = torch.sigmoid(-1 * self.mlp(res))
+        m = self.mlp(torch.cat([m, edge_info[torch.LongTensor([1,0])].t().double()], dim=1))
+        priori = self.mlp1(torch.cat([x[idx], torch.Tensor([x for x in range(rows)]).repeat(1,\
+                                      BATCH_SIZE).double().t().cuda()] ,dim=1))
+        
+        res = scatter_('add', m, edge_index[0], dim_size=size[0])[idx].clone() + priori
+        res = torch.sigmoid(-1 * res)
         
         return res
 
@@ -343,8 +351,8 @@ class LossFunc(torch.nn.Module):
             tmp = torch.cat([tmp, datas.y[i : i+self.a].clone()], dim=1)
             res = torch.cat([res, pred[i : i+self.a].clone()], dim=1)
               
-        loss = abs(torch.sin(torch.matmul(H.t().cuda(), tmp + res) * math.pi / 2)).sum() #+ \
-#            abs(torch.sin(torch.matmul(logical, tmp + res) * math.pi / 2)).sum()
+        loss = abs(torch.sin(torch.matmul(H.t().cuda(), tmp + res) * math.pi / 2)).sum() + \
+            abs(torch.sin(torch.matmul(logical, tmp + res) * math.pi / 2)).sum()
         
         return loss
     
