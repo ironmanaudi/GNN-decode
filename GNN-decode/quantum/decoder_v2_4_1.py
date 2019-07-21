@@ -193,8 +193,8 @@ H_prep = torch.from_numpy(h_prep.get_H_Prep())
 BATCH_SIZE = 128
 lr = 3e-4
 Nc = 15
-run1 = 2048#40960
-run2 = 256#2048
+run1 = 40960
+run2 = 2048
 adj = H.to_sparse()
 edge_info = torch.cat([adj._indices()[0].unsqueeze(0), \
                          adj._indices()[1].unsqueeze(0).add(H.size()[0])], dim=0).repeat(1, BATCH_SIZE).cuda()
@@ -278,7 +278,7 @@ class GraphConv(MessagePassing):
     
     def update(self, aggr_out):
         if self.flow == 'source_to_target':
-            aggr_out[:, 1] = torch.matmul(aggr_out[:, 1].clone().unsqueeze(1).mul(feat_onehot), self.W).squeeze(1)
+            aggr_out[:, 1] = torch.matmul(aggr_out[:, 1].clone().unsqueeze(1).mul(feat_onehot), self.W_p).squeeze(1)
             
             return self.mlp1(aggr_out[:, 0].clone().unsqueeze(1)) + aggr_out[:, 1].clone().unsqueeze(1)
         else:
@@ -345,9 +345,27 @@ class LossFunc(torch.nn.Module):
         
         return loss
     
+    
+class WeightClipper(object):
+
+    def __init__(self, frequency=5):
+        self.frequency = frequency
+
+    def __call__(self, module):
+        if hasattr(module, 'W') or hasattr(module, 'W_p'):
+            w = module.weight.data
+            w = w.clamp(0, 1e10)
+            module.weight.data = w
+        
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 decoder = GNNI(Nc).to(device)
+'''
+apply weight clipper
+'''
+clipper = WeightClipper()
+decoder.apply(clipper)
+
 #decoder.load_state_dict(torch.load('./new_model/decoder_parameters_epoch1.pkl'))
 optimizer = torch.optim.Adam(decoder.parameters(), lr, weight_decay=1e-9)
 criterion = LossFunc(H, H_prep)
