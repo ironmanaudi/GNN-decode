@@ -347,16 +347,20 @@ class LossFunc(torch.nn.Module):
     
     
 class WeightClipper(object):
-
     def __init__(self, frequency=5):
         self.frequency = frequency
-
+    
     def __call__(self, module):
-        if hasattr(module, 'W') or hasattr(module, 'W_p'):
-            w = module.weight.data
+        if hasattr(module, 'W'):
+            w = module.W.data
             w = w.clamp(0, 1e10)
-            module.weight.data = w
-        
+            module.W.data = w
+            
+        if hasattr(module, 'W_p'):
+            w = module.W_p.data
+            w = w.clamp(0, 1e10)
+            module.W_p.data = w
+
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 decoder = GNNI(Nc).to(device)
