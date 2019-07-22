@@ -184,7 +184,7 @@ class CustomDataset(InMemoryDataset):
         return '{}()'.format(self.__class__.__name__) 
 
 
-L = 5
+L = 4
 P1 = [0.01,0.02,0.03,0.04,0.05,0.06,0.07,0.08,0.09,0.1]
 P2 = [0.01]
 H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
@@ -193,8 +193,8 @@ H_prep = torch.from_numpy(h_prep.get_H_Prep())
 BATCH_SIZE = 128
 lr = 1e-4
 Nc = 15
-run1 = 40960
-run2 = 2048
+run1 = 2048#40960
+run2 = 256#2048
 adj = H.to_sparse()
 edge_info = torch.cat([adj._indices()[0].unsqueeze(0), \
                          adj._indices()[1].unsqueeze(0).add(H.size()[0])], dim=0).repeat(1, BATCH_SIZE).cuda()
@@ -222,7 +222,7 @@ for j in range(cols):
 feat = feat.to_sparse()._values().unsqueeze(1)
 feat_onehot = torch.Tensor(int(H.sum()), nb_digits).double()
 feat_onehot.zero_()
-feat_onehot.scatter_(1, torch.LongTensor(feat.to(dtype=torch.long)), 1)
+feat_onehot.scatter_(1, feat.to(dtype=torch.long), 1)
 feat_onehot = feat_onehot.repeat(BATCH_SIZE, 1).cuda()
 
 
@@ -310,11 +310,11 @@ class GNNI(torch.nn.Module):
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
         idx = torch.LongTensor([x for x in range(rows)]).cuda()
         
-        feat_p = torch.Tensor([x for x in range(rows)]).t()
+        feat_p = torch.Tensor([[x for x in range(rows)]]).t()
         feat_p_onehot = torch.Tensor(rows, rows).double()
         feat_p_onehot.zero_()
-        feat_p_onehot.scatter_(1, torch.LongTensor(feat_p.to(dtype=torch.long)), 1)
-        feat_p_onehot = feat_onehot.repeat(BATCH_SIZE, 1).cuda()
+        feat_p_onehot.scatter_(1, feat_p.to(dtype=torch.long), 1)
+        feat_p_onehot = feat_p_onehot.repeat(BATCH_SIZE, 1).cuda()
         
         for i in range(rows+cols, len(x), rows+cols):
             idx = torch.cat([idx, torch.LongTensor([x for x in range(i, i+rows)]).cuda()], dim=0)
