@@ -191,7 +191,7 @@ H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
 h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep())
 BATCH_SIZE = 128
-lr = 3e-4
+lr = 1e-4
 Nc = 15
 run1 = 40960
 run2 = 2048
@@ -296,6 +296,8 @@ class GNNI(torch.nn.Module):
                        torch.nn.Softplus(),
                        torch.nn.Linear(128, 1).double())
         self.mlp.apply(init_weights_2)
+        self.W = torch.nn.Parameter(Variable(torch.ones((nb_digits, 1)).double()))
+        self.W_p = torch.nn.Parameter(Variable(torch.ones((rows, 1)).double()))
     
     def forward(self, data):
         '''
@@ -308,6 +310,12 @@ class GNNI(torch.nn.Module):
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
         idx = torch.LongTensor([x for x in range(rows)]).cuda()
         
+        feat_p = torch.Tensor([x for x in range(rows)]).t()
+        feat_p_onehot = torch.Tensor(rows, rows).double()
+        feat_p_onehot.zero_()
+        feat_p_onehot.scatter_(1, torch.LongTensor(feat_p.to(dtype=torch.long)), 1)
+        feat_p_onehot = feat_onehot.repeat(BATCH_SIZE, 1).cuda()
+        
         for i in range(rows+cols, len(x), rows+cols):
             idx = torch.cat([idx, torch.LongTensor([x for x in range(i, i+rows)]).cuda()], dim=0)
         
@@ -317,7 +325,8 @@ class GNNI(torch.nn.Module):
             m = self.ggc2(m, edge_index, x) + m_p
 #            a = scatter_('add', self.mlp(m), edge_index[0], dim_size=size[0])[idx].clone() + x[idx]
 #            print(torch.sigmoid(-1 * a).t())
-        res = scatter_('add', self.mlp(m), edge_index[0], dim_size=size[0])[idx].clone() + x[idx]
+        m = torch.matmul(self.mlp(m).mul(feat_onehot), self.W)
+        res = scatter_('add', m, edge_index[0], dim_size=size[0])[idx].clone() + torch.matmul(x[idx].mul(feat_p_onehot), self.W_p)
         res = torch.sigmoid(-1 * res)
         
         return res
@@ -353,12 +362,12 @@ class WeightClipper(object):
     def __call__(self, module):
         if hasattr(module, 'W'):
             w = module.W.data
-            w = w.clamp(0, 1e10)
+            w = w.clamp(1e-10, 1e10)
             module.W.data = w
             
         if hasattr(module, 'W_p'):
             w = module.W_p.data
-            w = w.clamp(0, 1e10)
+            w = w.clamp(1e-10, 1e10)
             module.W_p.data = w
 
 
@@ -370,7 +379,7 @@ apply weight clipper
 clipper = WeightClipper()
 decoder.apply(clipper)
 
-#decoder.load_state_dict(torch.load('./new_model/decoder_parameters_epoch1.pkl'))
+#decoder.load_state_dict(torch.load('./model2/decoder_parameters_epoch7.pkl'))
 optimizer = torch.optim.Adam(decoder.parameters(), lr, weight_decay=1e-9)
 criterion = LossFunc(H, H_prep)
 '''
