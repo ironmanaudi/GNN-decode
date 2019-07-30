@@ -201,10 +201,10 @@ P2 = [0.01]
 H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
 h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep())
-BATCH_SIZE = 128
+BATCH_SIZE = 512
 lr = 3e-4
 Nc = 15
-run1 = 40960
+run1 = 81920
 run2 = 2048
 adj = H.to_sparse()
 edge_info = torch.cat([adj._indices()[0].unsqueeze(0), \
@@ -289,11 +289,20 @@ class GNNI(torch.nn.Module):
         super(GNNI, self).__init__()
         
         self.Nc = Nc
-        self.ggc1 = GraphConv("source_to_target")
-        self.ggc2 = GraphConv("target_to_source")
+        self.layers = self._make_layer()
         self.W = torch.nn.Parameter(Variable(torch.ones((nb_digits, 1)).double()))
-        self.W_p = torch.nn.Parameter(Variable(torch.ones((rows, 1)).double()))
-        self.weight = torch.nn.Parameter(Variable(torch.zeros((1, 1)).double()))
+        self.W_p = torch.nn.Parameter(Variable(torch.ones((nb_digits, 1))*0.5).double())
+        self.alpha = torch.nn.Parameter(Variable(torch.Tensor([[6]]).double()))
+        self.beta = torch.nn.Parameter(Variable(torch.Tensor([[-6]]).double()))
+    
+    def _make_layer(self):
+        layers = []
+        
+        for _ in range(self.Nc):
+            layers.append(GraphConv("source_to_target"))
+            layers.append(GraphConv("target_to_source"))
+            
+        return torch.nn.Sequential(*layers)
     
     def forward(self, data):
         '''
@@ -306,23 +315,26 @@ class GNNI(torch.nn.Module):
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
         idx = torch.LongTensor([x for x in range(rows)]).cuda()
         
-        feat_p = torch.Tensor([[x for x in range(rows)]]).t()
-        feat_p_onehot = torch.Tensor(rows, rows).double()
-        feat_p_onehot.zero_()
-        feat_p_onehot.scatter_(1, feat_p.to(dtype=torch.long), 1)
-        feat_p_onehot = feat_p_onehot.repeat(BATCH_SIZE, 1).cuda()
+#        feat_p = torch.Tensor([[x for x in range(rows)]]).t()
+#        feat_p_onehot = torch.Tensor(rows, rows).double()
+#        feat_p_onehot.zero_()
+#        feat_p_onehot.scatter_(1, feat_p.to(dtype=torch.long), 1)
+#        feat_p_onehot = feat_p_onehot.repeat(BATCH_SIZE, 1).cuda()
         
         for i in range(rows+cols, len(x), rows+cols):
             idx = torch.cat([idx, torch.LongTensor([x for x in range(i, i+rows)]).cuda()], dim=0)
         
-        for i in range(self.Nc):
+        for i in range(0, len(self.layers), 2):
             m_p = m.clone()
-            m = self.ggc1(m, edge_index, x)
-            m = self.ggc2(m, edge_index, x) + torch.matmul(m_p, self.weight)
+            m = self.layers[i](m, edge_index, x)
+            m = torch.matmul(self.layers[i+1](m, edge_index, x), torch.sigmoid(self.alpha)) + \
+            torch.matmul(m_p, torch.sigmoid(self.beta))
 #            a = scatter_('add', self.mlp(m), edge_index[0], dim_size=size[0])[idx].clone() + x[idx]
 #            print(torch.sigmoid(-1 * a).t())
         m = torch.matmul(m.mul(feat_onehot), self.W)
-        res = scatter_('add', m, edge_index[0], dim_size=size[0])[idx].clone() + torch.matmul(x[idx].mul(feat_p_onehot), self.W_p)
+        prior = torch.matmul(x[edge_index[0]].mul(feat_onehot), self.W_p)
+        res = scatter_('add', m, edge_index[0], dim_size=size[0])[idx].clone() + \
+        scatter_('add', prior, edge_index[0], dim_size=size[0])[idx].clone()
         res = torch.sigmoid(-1 * res)
         
         return res
@@ -345,8 +357,8 @@ class LossFunc(torch.nn.Module):
             tmp = torch.cat([tmp, datas.y[i : i+self.a].clone()], dim=1)
             res = torch.cat([res, pred[i : i+self.a]], dim=1)
             
-        loss = abs(torch.sin(torch.matmul(H.t().cuda(), tmp + res) * math.pi / 2)).sum() + \
-        abs(torch.sin(torch.matmul(logical, tmp + res) * math.pi / 2)).sum()
+        loss = abs(torch.sin(torch.matmul(H.t().cuda(), tmp + res) * math.pi / 2)).sum() #+ \
+#        loss = abs(torch.sin(torch.matmul(logical, tmp + res) * math.pi / 2)).sum()
         
         return loss
     
@@ -375,8 +387,8 @@ apply weight clipper
 clipper = WeightClipper()
 decoder.apply(clipper)
 
-#decoder.load_state_dict(torch.load('./model2/decoder_parameters_epoch1.pkl'))
-optimizer = torch.optim.Adam(decoder.parameters(), lr, weight_decay=1e-5)
+#decoder.load_state_dict(torch.load('./neural_BP/decoder_parameters_epoch20.pkl'))
+optimizer = torch.optim.Adam(decoder.parameters(), lr, weight_decay=0)
 criterion = LossFunc(H, H_prep)
 '''
 load pretrained model
@@ -422,7 +434,7 @@ def test(decoder_a):
         
         loss += criterion(pred, datas).item()
         
-    return loss / (run2 * 2 * L ** 2)
+    return loss / (run2 * L ** 2)
 #    return loss / run2
 
 
@@ -450,7 +462,7 @@ if __name__ == '__main__':
 #        f = open('./test_loss_for_trained_model.txt','a')
 #        f = open('./model_parameters_for_trained_model.txt','a')
         decoder_b = GNNI(Nc).to(device)
-        decoder_b.load_state_dict(torch.load('./nueral_BP/decoder_parameters_epoch67.pkl'))
+        decoder_b.load_state_dict(torch.load('./neural_BP/decoder_parameters_epoch407.pkl'))
         
             
 #        for name, param in decoder_b.named_parameters():
