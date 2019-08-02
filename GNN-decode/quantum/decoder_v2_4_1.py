@@ -22,7 +22,7 @@ import torch_scatter
 from torch_scatter import scatter_add
 import decoder_v2_4
 '''
-BP free decoder, with phase one & two modified to mlp
+weighted (info) BP free decoder
 '''
 
 def scatter_mean(src, index, dim=-1, out=None, dim_size=None, fill_value=0):
@@ -184,17 +184,17 @@ class CustomDataset(InMemoryDataset):
         return '{}()'.format(self.__class__.__name__) 
 
 
-L = 4
+L = 5
 P1 = [0.01,0.02,0.03,0.04,0.05,0.06,0.07,0.08,0.09,0.1]
 P2 = [0.01]
 H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
 h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep())
 BATCH_SIZE = 128
-lr = 1e-4
+lr = 3e-4
 Nc = 15
-run1 = 2048#40960
-run2 = 256#2048
+run1 = 40960
+run2 = 2048
 adj = H.to_sparse()
 edge_info = torch.cat([adj._indices()[0].unsqueeze(0), \
                          adj._indices()[1].unsqueeze(0).add(H.size()[0])], dim=0).repeat(1, BATCH_SIZE).cuda()
@@ -211,14 +211,25 @@ logical, stab = logical.cuda(), stab.cuda()
 generating edge features
 '''
 feat = H.clone()
-nb_digits = 4
+nb_digits = 8
 
 for j in range(cols):
     tmp = feat[:, j].clone().to_sparse()
     i = tmp._indices()
     v = torch.tensor([0.2,1,2,3]).double()
     feat[:, j] = torch.sparse.FloatTensor(i, v, feat[:, j].size()).to_dense()
-  
+
+for i in range(rows):
+    tmp = feat[i].clone().to_sparse()
+    idx = tmp._indices()
+    v = tmp.values()
+    
+    for j in range(len(idx[0])):
+        if idx[0][j] > (cols / 2 - 1):
+            v[j] = v[j] + nb_digits / 2
+            
+    feat[i] = torch.sparse.FloatTensor(idx, v, feat[i].size()).to_dense()
+
 feat = feat.to_sparse()._values().unsqueeze(1)
 feat_onehot = torch.Tensor(int(H.sum()), nb_digits).double()
 feat_onehot.zero_()
@@ -290,14 +301,24 @@ class GNNI(torch.nn.Module):
         super(GNNI, self).__init__()
         
         self.Nc = Nc
-        self.ggc1 = GraphConv("source_to_target")
-        self.ggc2 = GraphConv("target_to_source")
+        self.layers = self._make_layer()
         self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 128).double(),
                        torch.nn.Softplus(),
                        torch.nn.Linear(128, 1).double())
         self.mlp.apply(init_weights_2)
         self.W = torch.nn.Parameter(Variable(torch.ones((nb_digits, 1)).double()))
-        self.W_p = torch.nn.Parameter(Variable(torch.ones((rows, 1)).double()))
+        self.W_p = torch.nn.Parameter(Variable(torch.ones((nb_digits, 1))*0.5).double())
+        self.alpha = torch.nn.Parameter(Variable(torch.Tensor([[4]]).double()))
+        self.beta = torch.nn.Parameter(Variable(torch.Tensor([[-4]]).double()))
+    
+    def _make_layer(self):
+        layers = []
+        
+        for _ in range(self.Nc):
+            layers.append(GraphConv("source_to_target"))
+            layers.append(GraphConv("target_to_source"))
+            
+        return torch.nn.Sequential(*layers)
     
     def forward(self, data):
         '''
@@ -310,23 +331,19 @@ class GNNI(torch.nn.Module):
         size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE)
         idx = torch.LongTensor([x for x in range(rows)]).cuda()
         
-        feat_p = torch.Tensor([[x for x in range(rows)]]).t()
-        feat_p_onehot = torch.Tensor(rows, rows).double()
-        feat_p_onehot.zero_()
-        feat_p_onehot.scatter_(1, feat_p.to(dtype=torch.long), 1)
-        feat_p_onehot = feat_p_onehot.repeat(BATCH_SIZE, 1).cuda()
-        
         for i in range(rows+cols, len(x), rows+cols):
             idx = torch.cat([idx, torch.LongTensor([x for x in range(i, i+rows)]).cuda()], dim=0)
         
-        for i in range(self.Nc):
+        for i in range(0, len(self.layers), 2):
             m_p = m.clone()
-            m = self.ggc1(m, edge_index, x)
-            m = self.ggc2(m, edge_index, x) + m_p
-#            a = scatter_('add', self.mlp(m), edge_index[0], dim_size=size[0])[idx].clone() + x[idx]
-#            print(torch.sigmoid(-1 * a).t())
+            m = self.layers[i](m, edge_index, x)
+            m = torch.matmul(self.layers[i+1](m, edge_index, x), torch.sigmoid(self.alpha)) + \
+            torch.matmul(m_p, torch.sigmoid(self.beta))
+            
         m = torch.matmul(self.mlp(m).mul(feat_onehot), self.W)
-        res = scatter_('add', m, edge_index[0], dim_size=size[0])[idx].clone() + torch.matmul(x[idx].mul(feat_p_onehot), self.W_p)
+        prior = torch.matmul(x[edge_index[0]].mul(feat_onehot), self.W_p)
+        res = scatter_('add', m, edge_index[0], dim_size=size[0])[idx].clone() + \
+        scatter_('add', prior, edge_index[0], dim_size=size[0])[idx].clone()
         res = torch.sigmoid(-1 * res)
         
         return res
@@ -350,7 +367,7 @@ class LossFunc(torch.nn.Module):
             res = torch.cat([res, pred[i : i+self.a]], dim=1)
             
         loss = abs(torch.sin(torch.matmul(H.t().cuda(), tmp + res) * math.pi / 2)).sum() + \
-        abs(torch.sin(torch.matmul(logical, tmp + res) * math.pi / 2)).sum()
+        1e-3 * abs(torch.sin(torch.matmul(logical, tmp + res) * math.pi / 2)).sum()
         
         return loss
     
@@ -379,8 +396,8 @@ apply weight clipper
 clipper = WeightClipper()
 decoder.apply(clipper)
 
-#decoder.load_state_dict(torch.load('./model2/decoder_parameters_epoch7.pkl'))
-optimizer = torch.optim.Adam(decoder.parameters(), lr, weight_decay=1e-9)
+#decoder.load_state_dict(torch.load('./model2/decoder_parameters_epoch1.pkl'))
+optimizer = torch.optim.Adam(decoder.parameters(), lr, weight_decay=1e-5)
 criterion = LossFunc(H, H_prep)
 '''
 load pretrained model
@@ -410,7 +427,7 @@ def train(epoch):
         
     if epoch % 1 == 0:
         f.write(' %.15f ' % (loss.item()))
-        torch.save(decoder.state_dict(), './model2/decoder_parameters_epoch%d.pkl' % (epoch))
+        torch.save(decoder.state_dict(), './model2_2/decoder_parameters_epoch%d.pkl' % (epoch))
         
     f.close()
     
@@ -426,7 +443,7 @@ def test(decoder_a):
         
         loss += criterion(pred, datas).item()
         
-    return loss / (run2 * 2 * L ** 2)
+    return loss / (run2 * L ** 2)
 #    return loss / run2
 
 
