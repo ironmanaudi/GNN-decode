@@ -10,28 +10,61 @@ np.set_printoptions(threshold = 1e6)
 
 '''first part: toric code stablilizer'''
 '''需要首先得到stabilizer， L = 4、6、8....18，找到lattice的表达形式，推导stablilizer，及logical operators'''
-'''H和stabilizer都为一个（2*L^2-2）*（4*L^2）的矩阵，令其为上Z，下X;左X，右z的矩阵'''
+'''H和stabilizer都为一个（2*L^2-2）*（4*L^2）的矩阵，令其为上Z，下X;左Z，右X的矩阵'''
 
 #generator 去掉了最后一个
 def generate_PCM(k, L):
     j = 0
     H = np.zeros([(2 * L * L - 2), (4 * L * L)])
+    H_prime = np.zeros([(2 * L * L - 2), (4 * L * L)])
+    orders = [] #follow the order of up, left, right, down for Z and X
+    
     for i in range(int(k / 2)):
         H[i][j] = H[i][j + L] = H[i][(j + 2 * L) % (2 * L * L)] = 1
         H[i + int(k / 2)][2 * L * L + j] = H[i + int(k / 2)][2 * L * L + j + L] \
         = H[i + int(k / 2)][2 * L * L + (j - L) % (2 * L * L)]  = 1
+        
+        #append up and left for Z
+#        orders.append([i, j])
+#        orders.append([i, j+L])
+        H_prime[i][j] = 0.2
+        H_prime[i][j+L] = 1
+        #append right and down for Z
         if (j + L + 1) % L == 0:
             H[i][j + 1] = 1
+#            orders.append([i, j+1])
+            H_prime[i][j+1] = 2
         else:
             H[i][j + L + 1] = 1
+#            orders.append([i, j+L+1])
+            H_prime[i][j+L+1] = 2
+#        orders.append([i, (j + 2 * L) % (2 * L * L)])
+        H_prime[i][(j + 2 * L) % (2 * L * L)] = 3
+        
+        #append up and left for X
+#        orders.append([i + int(k / 2), 2 * L * L + (j - L) % (2 * L * L)])
+        H_prime[i + int(k / 2)][2 * L * L + (j - L) % (2 * L * L)] = 4.2
         if j % L != 0:
             H[i + int(k / 2)][2 * L * L + j - 1] = 1
+            H_prime[i + int(k / 2)][2 * L * L + j - 1] = 5
+#            orders.append([i + int(k / 2), 2 * L * L + j - 1]) #left
         else:
             H[i + int(k / 2)][2 * L * L + (j - 1 + L)] = 1
+#            orders.append([i + int(k / 2), 2 * L * L + (j - 1 + L)])
+            H_prime[i + int(k / 2)][2 * L * L + (j - 1 + L)] = 5
+            
+        #append right and down for X
+        H_prime[i + int(k / 2)][2 * L * L + j] = 6
+        H_prime[i + int(k / 2)][2 * L * L + j + L] = 7
+        orders.append([i + int(k / 2), 2 * L * L + j]) #right
+        orders.append([i + int(k / 2), 2 * L * L + j + L]) #down
+        
+        
         if (j + 1) % L == 0:
             j = j + L
         j += 1
-    return H
+        
+    return H, H_prime
 
 '''得到Log'''
 '''
@@ -164,10 +197,16 @@ def gen_syn(P, L, H, run):
                 err[0, j] = 1 #X error
             if b < p:
                 err[0, j + 2 * L * L] = 1 #Z error
+#        err = np.array([[0., 0., 0., 0., 0., 1., 1., 0., 0, 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+#         0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+#         0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+#         0., 0., 0., 0., 0., 0., 0., 0., 0., 0.]])
+#        prior[0][5] = 10
         syn_prime = (np.dot(H.t(), err.T) % 2).T
         syn = syn_prime
         for i in range(len(syn)):
             syn[i] = (-1) ** syn_prime[i]
+#        print(prior)
         dataset.append(torch.from_numpy(np.concatenate([prior, syn], axis = 1)))
         dataset.append(torch.from_numpy(err))
         err = np.zeros((1, 4 * L * L))
