@@ -195,7 +195,7 @@ class CustomDataset(InMemoryDataset):
         return '{}()'.format(self.__class__.__name__) 
 
 
-L = 2
+L = 6
 P1 = [0.01,0.02,0.03,0.04,0.05,0.06]
 P2 = [0.01]
 H_init, H_prime = error_generate.generate_PCM(2 * L * L - 2, L)
@@ -203,11 +203,11 @@ H= torch.from_numpy(H_init).t() #64, 30
 H_prime = torch.from_numpy(H_prime).t()
 h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep())
-BATCH_SIZE = 1#28
+BATCH_SIZE = 512
 lr = 2e-4
-Nc = 3#25
-run1 = 1#81920
-run2 = 1#2048
+Nc = 25
+run1 = 81920
+run2 = 2048
 adj = H.to_sparse()
 edge_info = torch.cat([adj._indices()[0].unsqueeze(0), \
                          adj._indices()[1].unsqueeze(0).add(H.size()[0])], dim=0).repeat(1, BATCH_SIZE).cuda()
@@ -275,8 +275,8 @@ class GraphConv(MessagePassing):
         
         self.flow = flow
         
-        self.W = torch.nn.Parameter(Variable(torch.rand((nb_digits, 1)).double()))
-        self.W_p = torch.nn.Parameter(Variable(torch.rand((nb_digits, 1)).double()))
+        self.W = torch.nn.Parameter(Variable(torch.ones((nb_digits, 1)).double()))
+        self.W_p = torch.nn.Parameter(Variable(torch.ones((nb_digits, 1)).double()))
 
     def forward(self, m, edge_index, x, prev=None):
         x = x if x.dim() == 2 else x.unsqueeze(-1)
@@ -302,8 +302,8 @@ class GNNI(torch.nn.Module):
         
         self.Nc = Nc
         self.layers = self._make_layer()
-        self.W = torch.nn.Parameter(Variable(torch.rand((nb_digits, 1)).double()))
-        self.W_pr = torch.nn.Parameter(Variable(torch.rand((nb_digits, 1))).double())
+        self.W = torch.nn.Parameter(Variable(torch.ones((nb_digits, 1)).double()))
+        self.W_pr = torch.nn.Parameter(Variable(torch.ones((nb_digits, 1)) * 0.5).double())
         self.weight = torch.nn.Parameter(Variable(torch.Tensor([[-4]]).double()))
     
     def _make_layer(self):
@@ -336,7 +336,7 @@ class GNNI(torch.nn.Module):
             m = self.layers[i+1](m, edge_index, x) + torch.matmul(m_p, torch.sigmoid(self.weight))
             results.append(m)
             
-        prior = torch.matmul(x[edge_index[0]].mul(feat_onehot), torch.sigmoid(self.W_pr))
+        prior = torch.matmul(x[edge_index[0]].mul(feat_onehot), self.W_pr)
         
         for j in range(len(results)):
             results[j] = torch.matmul(results[j].clone().mul(feat_onehot), self.W)
@@ -374,8 +374,8 @@ class LossFunc(torch.nn.Module):
             for i in range(self.a, len(y), self.a):
                 res = torch.cat([res, preds[j][i : i+self.a].clone()], dim=1)
             
-            loss = loss + abs(torch.sin(torch.matmul(H.t().cuda(), tmp + res) * math.pi / 2)).sum() #+ \
-#            loss = abs(torch.sin(torch.matmul(logical, tmp + res) * math.pi / 2)).sum()
+            loss = loss + abs(torch.sin(torch.matmul(H.t().cuda(), tmp + res) * math.pi / 2)).sum() + \
+            abs(torch.sin(torch.matmul(logical, tmp + res) * math.pi / 2)).sum()
             
         return loss
     
