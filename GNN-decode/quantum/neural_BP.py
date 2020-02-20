@@ -14,7 +14,7 @@ from torch.nn import Parameter as Param
 #from torch_geometric.nn.conv import MessagePassing
 import inspect
 from torch.nn import Parameter
-#from torch_geometric.utils import scatter_
+from torch_geometric.utils import scatter_
 import torch.nn.functional as F
 from torch_geometric.data import DataLoader
 import error_generate
@@ -24,32 +24,6 @@ from torch_scatter import scatter_add
 '''
 BP free decoder, with phase one & two modified to mlp
 '''
-
-def scatter_mean(src, index, dim=-1, out=None, dim_size=None, fill_value=0):
-    out = scatter_add(src, index, dim, out, dim_size, fill_value)[index] - src
-    
-    count = scatter_add(torch.ones_like(src), index, dim, None, out.size(dim))[index] - 1
-    return out / count.clamp(min=1)
-
-
-def scatter_(name, src, index, dim_size=None):
-    assert name in ['add', 'mean', 'max']
-
-    op = getattr(torch_scatter, 'scatter_{}'.format(name))
-    fill_value = -1e9 if name == 'max' else 0
-    
-    if name == 'mean':
-        out = scatter_mean(src, index, 0, None, dim_size, fill_value)
-    else:    
-        out = op(src, index, 0, None, dim_size, fill_value)
-#    print(out.size(), src.size())
-    if isinstance(out, tuple):
-        out = out[0]
-
-    if name == 'max':
-        out[out == fill_value] = 0
-
-    return out
 
 
 torch.autograd.set_detect_anomaly(True)
@@ -195,13 +169,13 @@ class CustomDataset(InMemoryDataset):
         return '{}()'.format(self.__class__.__name__) 
 
 
-L = 5
-P1 = [0.01,0.02,0.03,0.04,0.05,0.06,0.07,0.08,0.09,0.1]
+L = 4
+P1 = [0.01,0.02,0.03,0.04,0.05,0.06]
 P2 = [0.01]
-H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)).t() #64, 30
+H = torch.from_numpy(error_generate.generate_PCM(2 * L * L - 2, L)[0]).t() #64, 30
 h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep())
-BATCH_SIZE = 512
+BATCH_SIZE = 128
 lr = 3e-4
 Nc = 15
 run1 = 81920
@@ -357,8 +331,8 @@ class LossFunc(torch.nn.Module):
             tmp = torch.cat([tmp, datas.y[i : i+self.a].clone()], dim=1)
             res = torch.cat([res, pred[i : i+self.a]], dim=1)
             
-        loss = abs(torch.sin(torch.matmul(H.t().cuda(), tmp + res) * math.pi / 2)).sum() #+ \
-#        loss = abs(torch.sin(torch.matmul(logical, tmp + res) * math.pi / 2)).sum()
+        loss = abs(torch.sin(torch.matmul(H.t().cuda(), tmp + res) * math.pi / 2)).sum() + \
+            abs(torch.sin(torch.matmul(logical, tmp + res) * math.pi / 2)).sum()
         
         return loss
     
@@ -410,10 +384,6 @@ def train(epoch):
         optimizer.zero_grad()
         loss = criterion(decoder(datas), datas)
         loss.backward()
-        
-#        for p in decoder.parameters():
-#            print(p.grad.sum().item())
-        
         optimizer.step()
         
     if epoch % 1 == 0:
@@ -447,29 +417,10 @@ if __name__ == '__main__':
             test_acc = test(decoder)
             print('Epoch: {:03d}, Test Acc: {:.10f}'.format(epoch, test_acc))
     
-#    if load:
-#        for i in range(6, 211, 6):
-#            f = open('./test_loss_for_quantum.txt','a')
-#            decoder_a = GNNI(Nc).to(device)
-#            decoder_a.load_state_dict(torch.load('./model/decoder_parameters_epoch%d.pkl' % (i)))
-#            loss = test(decoder_a)
-#            print(loss)
-#            f.write(' %.15f ' % (loss))
-#            
-#            f.close()
             
     if load:
-#        f = open('./test_loss_for_trained_model.txt','a')
-#        f = open('./model_parameters_for_trained_model.txt','a')
         decoder_b = GNNI(Nc).to(device)
         decoder_b.load_state_dict(torch.load('./neural_BP/decoder_parameters_epoch407.pkl'))
         
-            
-#        for name, param in decoder_b.named_parameters():
-#            if param.requires_grad:
-#                print(name, param.data)
         loss = test(decoder_b)
         print(loss)
-#        f.write(' %.15f ' % (loss))
-        
-#        f.close()
