@@ -122,7 +122,6 @@ class MessagePassing(torch.nn.Module):
             out = torch.log(1 + out) - torch.log(1 - out)
         else:
             out = scatter_(self.aggr, out, edge_index[j], dim_size=size[i])[edge_index[j]] - out
-        
         if self.flow == 'source_to_target':
 #            out = out + extra[edge_index[j]]
             out = torch.cat([out, extra[edge_index[j]]], dim=1)
@@ -130,7 +129,6 @@ class MessagePassing(torch.nn.Module):
 #            out = torch.cat([out, extra[edge_index[j]]], dim=1)
             
         out = self.update(out, *update_args)
-
         return out
 
 
@@ -230,22 +228,27 @@ def a_p(grad):
     print(abs(grad).min().item(), abs(grad).max().item(), a.sum().item() / grad.numel())
     
 
+def save_grad(g, flow=None):
+    if flow is None:print(g)
+    else:print(flow, g)
+
+
 class GraphConv(MessagePassing):
     def __init__(self, flow, aggr='add', bias=True):
         super(GraphConv, self).__init__(aggr, flow)
         
         self.flow = flow
         
-        self.W = torch.nn.Parameter(Variable(torch.ones((int(H.sum()), 1)).double())).repeat(BATCH_SIZE, 1).cuda()
-        self.W_p = torch.nn.Parameter(Variable(torch.ones((int(H.sum()), 1))*0.5).double()).repeat(BATCH_SIZE, 1).cuda()
+        self.W = torch.nn.Parameter(Variable(torch.ones((int(H.sum()), 1)).double()).repeat(BATCH_SIZE, 1))
+        self.W_p = torch.nn.Parameter(Variable(torch.ones((int(H.sum()), 1))).double().repeat(BATCH_SIZE, 1))
 
     def forward(self, m, edge_index, x, prev=None):
         x = x if x.dim() == 2 else x.unsqueeze(-1)
         if self.flow == 'source_to_target':
             m = m.mul(self.W)
-        
         m = self.propagate(edge_index=edge_index, size=((rows+cols) * BATCH_SIZE, (rows+cols) * BATCH_SIZE), x=m, extra=x)
-        
+        #m.register_hook(save_grad(m, self.flow))
+
         return m
     
     def update(self, aggr_out):
@@ -263,8 +266,8 @@ class GNNI(torch.nn.Module):
         
         self.Nc = Nc
         self.layers = self._make_layer()
-        self.W = torch.nn.Parameter(Variable(torch.ones((int(H.sum()), 1)).double())).repeat(BATCH_SIZE, 1).cuda()
-        self.W_p = torch.nn.Parameter(Variable(torch.ones((int(H.sum()), 1))*0.5).double()).repeat(BATCH_SIZE, 1).cuda()
+        self.W = torch.nn.Parameter(Variable(torch.ones((int(H.sum()), 1)).double()).repeat(BATCH_SIZE, 1))
+        self.W_p = torch.nn.Parameter(Variable(torch.ones((int(H.sum()), 1))*0.5).double().repeat(BATCH_SIZE, 1))
         self.alpha = torch.nn.Parameter(Variable(torch.Tensor([[0]]).double()))
     
     def _make_layer(self):
@@ -292,7 +295,6 @@ class GNNI(torch.nn.Module):
 #        feat_p_onehot.zero_()
 #        feat_p_onehot.scatter_(1, feat_p.to(dtype=torch.long), 1)
 #        feat_p_onehot = feat_p_onehot.repeat(BATCH_SIZE, 1).cuda()
-        
         for i in range(rows+cols, len(x), rows+cols):
             idx = torch.cat([idx, torch.LongTensor([x for x in range(i, i+rows)]).cuda()], dim=0)
         
@@ -300,7 +302,7 @@ class GNNI(torch.nn.Module):
             m_p = m.clone()
             m = self.layers[i](m, edge_index, x)
             m = self.layers[i+1](m, edge_index, x) + torch.matmul(m_p, self.alpha)
-            
+
 #            a = scatter_('add', self.mlp(m), edge_index[0], dim_size=size[0])[idx].clone() + x[idx]
 #            print(torch.sigmoid(-1 * a).t())
         m = m.mul(self.W)
@@ -319,20 +321,32 @@ class LossFunc(torch.nn.Module):
         self.a, self.b = max(H.size()), min(H.size())
         self.H_prep = H_prep.cuda()
         
-    def forward(self, pred, datas):
+    def forward(self, pred, datas, train=1):
 #        print(pred.t())
 #        print(datas.y.t())
-        alpha = 0.1
+        alpha = 0.0
         tmp = datas.y[0 : self.a].clone()
         res = pred[0 : self.a].clone()
         
         for i in range(self.a, len(datas.y), self.a):
             tmp = torch.cat([tmp, datas.y[i : i+self.a].clone()], dim=1)
             res = torch.cat([res, pred[i : i+self.a]], dim=1)
-            
-        loss = abs(torch.sin(torch.matmul(H.t().cuda(), tmp + res) * math.pi / 2)).sum() + \
-        abs(torch.sin(torch.matmul(logical, tmp + res) * math.pi / 2)).sum() + torch.sin(res * math.pi).sum() * alpha
         
+        if train:
+            loss = abs(torch.sin(torch.matmul(H.t().cuda(), tmp + res) * math.pi / 2)).sum() + \
+                abs(torch.sin(torch.matmul(logical, tmp + res) * math.pi / 2)).sum() + torch.sin(res * math.pi).sum() * alpha
+        else:
+            res = torch.where(res>0.5, torch.ones(res.size(), dtype=torch.float64).cuda(), torch.zeros(res.size(), dtype=torch.float64).cuda())
+            loss_a = abs(torch.sin(torch.matmul(H.t().cuda(), tmp + res) * math.pi / 2))
+            temp = loss_a.sum(0).unsqueeze(0)
+            temp = torch.where(temp<0.5, torch.ones(temp.size(), dtype=torch.float64).cuda(), torch.zeros(temp.size(), dtype=torch.float64).cuda())
+            loss_a = res.sum(0)
+            loss_a = torch.where(loss_a>0.5, torch.ones(loss_a.size(), dtype=torch.float64).cuda(), torch.zeros(loss_a.size(), dtype=torch.float64).cuda()).sum()
+            res = (res+tmp).mul(temp)
+            loss_b = abs(torch.sin(torch.matmul(logical, res) * math.pi / 2)).sum(0)
+            loss_b = torch.where(loss_b>0.5, torch.ones(loss_b.size(), dtype=torch.float64).cuda(), torch.zeros(loss_b.size(), dtype=torch.float64).cuda()).sum()
+            loss = loss_a + loss_b
+
         return loss
     
     
@@ -381,45 +395,61 @@ def train(epoch):
         datas = datas.to(device)
         optimizer.zero_grad()
         loss = criterion(decoder(datas), datas)
-        loss.backward(retain_graph=True)
-        optimizer.step()
+        loss.backward()#retain_graph=True)
         
+#        for name, param in decoder.named_parameters():
+#            if param.requires_grad:
+#                print(name, param.grad)
+
+        optimizer.step()
+
     if epoch % 1 == 0:
         torch.save(decoder.state_dict(), './neural_BP/decoder_parameters_epoch%d.pkl' % (epoch))
         
     return loss
 
 
-def test(decoder_a):
+def test(decoder_a, train):
     decoder_a.eval()
     loss = 0
+
     for datas in test_loader:
         datas = datas.to(device)
-        pred = decoder_a(datas)
+        pred = decoder_a(datas)    
+        loss += criterion(pred, datas, train).item()
         
-        loss += criterion(pred, datas).item()
-        
-    return loss / (run2 * L ** 2)
-#    return loss / run2
+    if train:return loss / (run2 * L ** 2)
+    else:return loss / run2
 
 
 if __name__ == '__main__':
-    training = 1
+    training = 0
     load = 1 - training
     if training:
         f = open('./NBP_training_loss.txt','a')
-        for epoch in range(1, 1201):
+        N = 1201
+        for epoch in range(1, N):
             train(epoch)
-            test_acc = test(decoder)
+            test_acc = test(decoder, training)
             f.write('Epoch: {:03d}, Test Acc: {:.10f}'.format(epoch, test_acc))
             print('Epoch: {:03d}, Test Acc: {:.10f}'.format(epoch, test_acc))
 
         f.close()
     
+#    if load:
+#        for i in range(6, 211, 6):
+#            f = open('./test_loss_for_quantum.txt','a')
+#            decoder_a = GNNI(Nc).to(device)
+#            decoder_a.load_state_dict(torch.load('./neural_BP/decoder_parameters_epoch%d.pkl' % (i)))
+#            loss = test(decoder_a)
+#            print(loss)
+#            f.write(' %.15f ' % (loss))
             
+#            f.close()
+    
     if load:
         decoder_b = GNNI(Nc).to(device)
-        decoder_b.load_state_dict(torch.load('./neural_BP/decoder_parameters_epoch407.pkl'))
+        decoder_b.load_state_dict(torch.load('./neural_BP/decoder_parameters_epoch52.pkl'))
         
-        loss = test(decoder_b)
+        loss = test(decoder_b, training)
         print(loss)
