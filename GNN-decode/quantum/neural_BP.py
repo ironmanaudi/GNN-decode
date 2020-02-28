@@ -310,7 +310,7 @@ class GNNI(torch.nn.Module):
         res = scatter_('add', m, edge_index[0], dim_size=size[0])[idx].clone() + \
         scatter_('add', prior, edge_index[0], dim_size=size[0])[idx].clone()
         res = torch.sigmoid(-1 * res)
-        
+
         return res
 
 
@@ -340,7 +340,7 @@ class LossFunc(torch.nn.Module):
             loss_a = abs(torch.sin(torch.matmul(H.t().cuda(), tmp + res) * math.pi / 2))
             temp = loss_a.sum(0).unsqueeze(0)
             temp = torch.where(temp<0.5, torch.ones(temp.size(), dtype=torch.float64).cuda(), torch.zeros(temp.size(), dtype=torch.float64).cuda())
-            loss_a = res.sum(0)
+            loss_a = loss_a.sum(0)
             loss_a = torch.where(loss_a>0.5, torch.ones(loss_a.size(), dtype=torch.float64).cuda(), torch.zeros(loss_a.size(), dtype=torch.float64).cuda()).sum()
             res = (res+tmp).mul(temp)
             loss_b = abs(torch.sin(torch.matmul(logical, res) * math.pi / 2)).sum(0)
@@ -423,7 +423,7 @@ def test(decoder_a, train):
 
 
 if __name__ == '__main__':
-    training = 1
+    training = 0
     load = 1 - training
     if training:
         f = open('./NBP_training_loss.txt','a')
@@ -449,7 +449,7 @@ if __name__ == '__main__':
     
     if load:
         decoder_b = GNNI(Nc).to(device)
-        decoder_b.load_state_dict(torch.load('./neural_BP/decoder_parameters_epoch29.pkl'))
+        decoder_b.load_state_dict(torch.load('./neural_BP/decoder_parameters_epoch148.pkl'))
         
         loss = test(decoder_b, training)
         print(loss)
