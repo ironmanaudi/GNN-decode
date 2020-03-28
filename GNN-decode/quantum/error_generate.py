@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import torch 
 import os
 import sys
+import time
 
 np.set_printoptions(threshold = 1e6)
 
@@ -12,13 +13,77 @@ np.set_printoptions(threshold = 1e6)
 '''需要首先得到stabilizer， L = 4、6、8....18，找到lattice的表达形式，推导stablilizer，及logical operators'''
 '''H和stabilizer都为一个（2*L^2-2）*（4*L^2）的矩阵，令其为上Z，下X;左Z，右X的矩阵'''
 
+def encoder(H, L, c, v, a):
+    for i in range(int(L/2)):
+        ci,vi = c, v
+        for j in range(int(L/2)):
+            #print(c,v)
+            if ((v<2*L**2) and (c==(L**2-1))) or (c==(2*L**2-2)):pass
+            else:H[c, v] = a
+            if (c<(L**2-1)and(c%L+2<L))or((c>L**2-2)and(((c-L**2+1)%L+2)<L)and(v>2*L**2-1)):c=c+2
+            else:c = c+2-L
+            if ((v%L+2)<L):v = v+2
+            else:v = v+2-L
+            
+        if v<2*L**2:
+            c = (ci+2*L)%(L**2)
+            v = (vi+4*L)%(2*L**2)
+        else:
+            c = (ci-(L**2-1)+2*L)%(L**2)+(L**2-1)
+            v = (vi+4*L-2*L**2)%(2*L**2)+2*L**2
+
+    return H
+
+
 #generator 去掉了最后一个
 def generate_PCM(k, L):
     j = 0
     H = np.zeros([(2 * L * L - 2), (4 * L * L)])
     H_prime = np.zeros([(2 * L * L - 2), (4 * L * L)])
     orders = [] #follow the order of up, left, right, down for Z and X
-    
+    H_one = np.zeros([(2 * L * L - 2), (4 * L * L)])
+    elements = []
+    off_c = L**2-1
+    off_v = 2*L**2
+
+    for i in range(8):
+        elements.append((L**2-L, 0, 0.2))
+        elements.append((L**2-L+1, 1, 1))
+        elements.append((L-1, L, 2))
+        elements.append((1, L+1, 3))
+        elements.append((0, L+1, 4))
+        elements.append((2, L+2, 5))
+        elements.append((0, L*2, 6))
+        elements.append((L, L*2, 7))
+        elements.append((1, L*2+1, 8))
+        elements.append((1+L, L*2+1, 9))
+        elements.append((2*L-1, L*3, 10))
+        elements.append((L+1, L*3+1, 11))
+        elements.append((L, L*3+1, 12))
+        elements.append((L+2, L*3+2, 13))
+        elements.append((L*2, L*4, 14))
+        elements.append((L*2+1, L*4+1, 15))
+
+        elements.append((off_c+L**2-L, off_v+2*L**2-L, 16.2))
+        elements.append((off_c+L**2-L+1, off_v+2*L**2-L+1, 17))
+        elements.append((off_c+L-1, off_v+L-1, 18))
+        elements.append((off_c, off_v, 19))
+        elements.append((off_c+1, off_v, 20))
+        elements.append((off_c+2, off_v+1, 21))
+        elements.append((off_c, off_v+L, 22))
+        elements.append((off_c+L, off_v+L, 23))
+        elements.append((off_c+1, off_v+L+1, 24))
+        elements.append((off_c+L+1, off_v+L+1, 25))
+        elements.append((off_c+2*L-1, off_v+3*L-1, 26))
+        elements.append((off_c+L, off_v+2*L, 27))
+        elements.append((off_c+L+1, off_v+2*L, 28))
+        elements.append((off_c+L+2, off_v+2*L+1, 29))
+        elements.append((off_c+2*L, off_v+3*L, 30))
+        elements.append((off_c+2*L+1, off_v+3*L+1, 31))
+
+    for e in elements:
+        H_one = encoder(H_one, L, e[0], e[1], e[2])
+
     for i in range(int(k / 2)):
         H[i][j] = H[i][j + L] = H[i][(j + 2 * L) % (2 * L * L)] = 1
         H[i + int(k / 2)][2 * L * L + j] = H[i + int(k / 2)][2 * L * L + j + L] \
@@ -64,7 +129,7 @@ def generate_PCM(k, L):
             j = j + L
         j += 1
         
-    return H, H_prime
+    return H, H_one
 
 '''得到Log'''
 '''
@@ -197,8 +262,8 @@ def gen_syn(P, L, H, run):
                 err[0, j] = 1 #X error
             if b < p:
                 err[0, j + 2 * L * L] = 1 #Z error
-#        err = np.array([[0., 0., 0., 0., 0., 1., 1., 0., 0, 0., 0., 0., 0., 0., 0., 0., 0., 0.,
-#         0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+#        err = np.array([[0., 0., 0., 0., 0., 0., 0., 0., 0, 0., 1., 0., 0., 0., 0., 0., 0., 0.,
+#            1., 0., 0., 1., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
 #         0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
 #         0., 0., 0., 0., 0., 0., 0., 0., 0., 0.]])
 #        prior[0][5] = 10
