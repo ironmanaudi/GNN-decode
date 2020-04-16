@@ -25,6 +25,7 @@ from torch_scatter import scatter_add
 GCBPN
 '''
 
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
 torch.autograd.set_detect_anomaly(True)
 
@@ -176,8 +177,8 @@ h_prep = error_generate.H_Prep(H.t())
 H_prep = torch.from_numpy(h_prep.get_H_Prep())
 BATCH_SIZE = 128
 lr = 3e-4
-Nc = 15
-run1 = 40960
+Nc = 25
+run1 = 8192
 run2 = 2048
 adj = H.to_sparse()
 edge_info = torch.cat([adj._indices()[0].unsqueeze(0), \
@@ -336,7 +337,7 @@ apply weight clipper
 clipper = WeightClipper()
 decoder.apply(clipper)
 
-#decoder.load_state_dict(torch.load('./neural_BP/decoder_parameters_epoch20.pkl'))
+decoder.load_state_dict(torch.load('./model2_2/decoder_parameters_epoch714.pkl'))
 optimizer = torch.optim.Adam(decoder.parameters(), lr, weight_decay=0)
 criterion = LossFunc(H, H_prep)
 '''
@@ -366,7 +367,7 @@ def train(epoch):
         optimizer.step()
 
     if epoch % 1 == 0:
-        torch.save(decoder.state_dict(), './model1_2/decoder_parameters_epoch%d.pkl' % (epoch))
+        torch.save(decoder.state_dict(), './model2/decoder_parameters_epoch%d.pkl' % (epoch))
         
     return loss
 
@@ -411,7 +412,7 @@ if __name__ == '__main__':
     
     if load:
         decoder_b = GNNI(Nc).to(device)
-        decoder_b.load_state_dict(torch.load('./model2/decoder_parameters_epoch267.pkl'))
+        decoder_b.load_state_dict(torch.load('./model2_2/decoder_parameters_epoch767.pkl'))
         
         loss = test(decoder_b, training)
         print(loss)
